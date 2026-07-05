@@ -29,3 +29,6 @@ settings.local.json
 Thumbs.db
 .idea/
 .vscode/
+
+# internal QA transcripts (not for public repo)
+docs/reviews/

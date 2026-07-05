@@ -98,7 +98,9 @@
 
   <h2 id="caidat"><span class="n">2</span>Cài đặt &amp; Khởi chạy</h2>
   <h3>Cài một lần</h3>
-  <pre><code>powershell -ExecutionPolicy Bypass -File "C:\Users\DucNguyen\Code\ai-record\setup.ps1"</code></pre>
+  <pre><code>git clone https://github.com/ducnguyen221/ai-record
+cd ai-record
+powershell -ExecutionPolicy Bypass -File setup.ps1</code></pre>
   <p>Script tạo môi trường <code>.venv</code> + cài torch CUDA + toàn bộ thư viện. Lần đầu tải ~4–6&nbsp;GB model.</p>
   <h3>Mỗi lần dùng</h3>
   <ul>

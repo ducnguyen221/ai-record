@@ -1,15 +1,20 @@
-# ai-record
+# AI Record
 
-A **local, crash-safe meeting scribe** for Windows. While you're in an online
-meeting, ai-record captures the system audio (WASAPI loopback = "Them") and your
-microphone ("You"), segments each stream on voice activity, and transcribes it in
-near-real-time with faster-whisper on the GPU — writing every finalized utterance
-to durable, crash-safe storage as it goes.
+<p align="center"><img src="ai_record/web/logo.png" width="88" alt="AI Record"></p>
 
-Everything runs on your machine. No audio or transcript leaves the computer.
+![license](https://img.shields.io/badge/license-MIT-green) ![Windows](https://img.shields.io/badge/Windows-11-blue) ![Python](https://img.shields.io/badge/Python-3.12-blue) ![local](https://img.shields.io/badge/100%25-local-success)
 
-This repository currently implements **Milestone M1 — Core recorder** of
-[`docs/SPEC.md`](docs/SPEC.md) (v2.0). See *Milestones* below for what M2–M4 add.
+**AI Record** is a local, open-source **meeting scribe & voice-to-text** app for Windows.
+During any online meeting (Teams/Zoom/Meet…) — or as a standalone **dictation** tool — it
+captures your system audio (WASAPI loopback) and microphone, transcribes it in real time
+with **faster-whisper** on the GPU, **translates** foreign speech to Vietnamese, **separates
+speakers**, and optionally **summarizes** with AI (Claude/Codex/Gemini/local Ollama).
+
+**100% local & private** — audio never leaves your machine; only the optional *cloud
+summarize* sends transcript text out. Outputs are your choice: `.md` (default), `.txt`, `.mp3`,
+and an AI summary.
+
+🌐 **Website:** https://ducnguyen.vn/ai-record/ · 📖 **Guide:** [`docs/guide.html`](docs/guide.html) · 📄 **Spec:** [`docs/SPEC.md`](docs/SPEC.md)
 
 ---
 
