@@ -862,6 +862,28 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 }
 .prompt-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* Kết nối AI: per-machine provider sign-in / status / test. */
+.conn-list { display: flex; flex-direction: column; gap: 8px; }
+.conn-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface);
+}
+.conn-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.conn-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.conn-label { color: var(--text); font-weight: 600; }
+.conn-detail { color: var(--text-faint); font-size: 11.5px; line-height: 1.45; }
+.conn-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11.5px; font-weight: 600; line-height: 1;
+  padding: 3px 7px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--border-strong); color: var(--text-muted);
+}
+.conn-chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.conn-chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.conn-chip.fail { color: var(--fail); border-color: color-mix(in srgb, var(--fail) 45%, var(--border)); background: color-mix(in srgb, var(--fail) 12%, transparent); }
+.conn-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+
 .lang-picker {
   display: flex;
   flex-wrap: wrap;

@@ -468,6 +468,55 @@ def create_app(state: AppState) -> FastAPI:
             "ollama_available": available,
         }
 
+    # -- AI provider connection (per-machine sign-in / status / test) ----- #
+    @app.get("/api/providers/status", dependencies=dep)
+    async def providers_status() -> dict:
+        """Per-machine connection status for every AI provider (existence checks +
+        a 2s local Ollama probe only; never reads or transmits a credential)."""
+        from . import providers as _providers
+
+        return {
+            "providers": _providers.provider_status(state.settings, state.secrets),
+            "current": state.settings.summarizer_provider,
+        }
+
+    @app.post("/api/providers/{name}/login", dependencies=dep)
+    async def provider_login(name: str) -> Any:
+        """Trigger the CLI's OWN interactive login on THIS machine (new terminal).
+
+        Gemini/Ollama don't sign in this way → 400. Not-installed → 400. The app
+        never captures the credential; the CLI owns its login (SPEC §5.6).
+        """
+        from . import providers as _providers
+
+        if name in ("gemini", "ollama"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "n/a — Gemini dùng API key; Ollama chạy offline."},
+            )
+        if name not in _providers.CLI_PROVIDERS:
+            raise HTTPException(status_code=404, detail="unknown provider")
+        try:
+            _providers.launch_cli_login(name, state.settings)
+        except _providers.ProviderNotInstalled as exc:
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+        except Exception as exc:  # spawn failure → clear 400, never leak internals
+            log.warning("provider login launch failed for %s: %s", name, exc)
+            return JSONResponse(status_code=400, content={"error": "không mở được cửa sổ đăng nhập"})
+        return {
+            "launched": True,
+            "hint": "Hoàn tất đăng nhập trong cửa sổ terminal vừa mở, rồi bấm 'Kiểm tra'.",
+        }
+
+    @app.post("/api/providers/{name}/test", dependencies=dep)
+    async def provider_test(name: str) -> dict:
+        """Real connectivity check: run a tiny summarize through the provider."""
+        from . import providers as _providers
+
+        if name not in ("claude_cli", "codex_cli", "gemini", "ollama"):
+            raise HTTPException(status_code=404, detail="unknown provider")
+        return _providers.test_connection(name, state.settings, state.secrets, timeout_s=30)
+
     # -- settings / secrets ---------------------------------------------- #
     @app.get("/api/settings", dependencies=dep)
     async def get_settings() -> dict:

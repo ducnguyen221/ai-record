@@ -2022,6 +2022,22 @@
     el.setBody.appendChild(gSum);
     fillModelPicker();
 
+    /* --- Kết nối AI (per-machine sign-in / status / test) --- */
+    const gConn = group("Kết nối AI");
+    const connNote = document.createElement("p");
+    connNote.className = "set-note";
+    connNote.textContent =
+      "Đăng nhập theo tài khoản của CHÍNH máy này. App không lưu, không đọc, " +
+      "không chia sẻ thông tin đăng nhập — mỗi máy kết nối độc lập.";
+    gConn.appendChild(connNote);
+    const connList = document.createElement("div");
+    connList.className = "conn-list";
+    connList.id = "conn-list";
+    connList.textContent = "Đang kiểm tra kết nối…";
+    gConn.appendChild(connList);
+    el.setBody.appendChild(gConn);
+    loadProviderStatusInto();
+
     /* --- Prompt AI (Summary / Analyze): editable instruction prompts --- */
     const gPrompt = group("Prompt AI (Summary / Analyze)");
     const pNote = document.createElement("p");
@@ -2138,6 +2154,141 @@
     } else if (current) {
       sel.value = "__custom__";
       if (custom) { custom.hidden = false; custom.value = current; }
+    }
+  }
+
+  /* --- Kết nối AI: fetch + render provider connection status --- */
+  async function loadProviderStatusInto() {
+    const list = document.getElementById("conn-list");
+    if (!list) return; // drawer not open / panel not built
+    let data;
+    try {
+      data = await api("/api/providers/status");
+    } catch (_) {
+      list.textContent = "Không tải được trạng thái kết nối.";
+      return;
+    }
+    renderProviderStatus(list, data);
+  }
+
+  // Map one provider status entry → a status chip {sym, text, cls}.
+  function providerChip(p) {
+    if (p.kind === "local") {
+      return p.ready
+        ? { sym: "●", text: "Offline OK", cls: "ok" }
+        : { sym: "✗", text: "Chưa chạy", cls: "fail" };
+    }
+    if (p.kind === "api") {
+      return p.ready
+        ? { sym: "✓", text: "Sẵn sàng", cls: "ok" }
+        : { sym: "⚠", text: "Chưa có key", cls: "warn" };
+    }
+    // CLI
+    if (!p.installed) return { sym: "✗", text: "Chưa cài", cls: "fail" };
+    if (p.signed_in === true) return { sym: "✓", text: "Sẵn sàng", cls: "ok" };
+    if (p.signed_in === false) return { sym: "⚠", text: "Chưa đăng nhập", cls: "warn" };
+    return { sym: "⚠", text: "Chưa rõ đăng nhập", cls: "warn" };
+  }
+
+  function setChip(chip, cls, text) {
+    chip.className = "conn-chip " + cls;
+    chip.textContent = text;
+  }
+
+  function renderProviderStatus(list, data) {
+    list.textContent = "";
+    const providers = (data && data.providers) || [];
+    if (!providers.length) {
+      list.textContent = "Không có provider nào.";
+      return;
+    }
+    for (const p of providers) {
+      const row = document.createElement("div");
+      row.className = "conn-row";
+      row.dataset.name = p.name;
+
+      const info = document.createElement("div");
+      info.className = "conn-info";
+      const head = document.createElement("div");
+      head.className = "conn-head";
+      const label = document.createElement("span");
+      label.className = "conn-label";
+      label.textContent = p.label || p.name;
+      const chip = document.createElement("span");
+      const c = providerChip(p);
+      setChip(chip, c.cls, c.sym + " " + c.text);
+      head.append(label, chip);
+      info.appendChild(head);
+      if (p.detail) {
+        const d = document.createElement("small");
+        d.className = "conn-detail";
+        d.textContent = p.detail;
+        info.appendChild(d);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "conn-actions";
+      if (p.kind === "cli") {
+        const loginBtn = document.createElement("button");
+        loginBtn.type = "button";
+        loginBtn.className = "btn subtle";
+        loginBtn.textContent = "Đăng nhập";
+        loginBtn.disabled = !p.installed;
+        if (!p.installed) loginBtn.title = "Cài CLI này trên máy trước khi đăng nhập.";
+        loginBtn.addEventListener("click", () => providerLogin(p.name));
+        actions.appendChild(loginBtn);
+      } else if (p.kind === "api") {
+        const keyBtn = document.createElement("button");
+        keyBtn.type = "button";
+        keyBtn.className = "btn subtle";
+        keyBtn.textContent = p.ready ? "Đổi API key" : "Đặt API key";
+        keyBtn.addEventListener("click", async () => {
+          await setSecret("gemini_api_key", "Gemini API key");
+        });
+        actions.appendChild(keyBtn);
+      }
+      const testBtn = document.createElement("button");
+      testBtn.type = "button";
+      testBtn.className = "btn";
+      testBtn.textContent = "Kiểm tra";
+      testBtn.addEventListener("click", () => providerTest(p.name, chip, testBtn));
+      actions.appendChild(testBtn);
+
+      row.append(info, actions);
+      list.appendChild(row);
+    }
+  }
+
+  async function providerLogin(name) {
+    try {
+      const r = await api(`/api/providers/${name}/login`, { method: "POST" });
+      notice((r && r.hint) || "Đã mở cửa sổ đăng nhập.", "info");
+    } catch (e) {
+      const msg = (e.data && (e.data.error || e.data.detail)) || e.message;
+      notice("Không mở được đăng nhập: " + msg, "error");
+    }
+  }
+
+  async function providerTest(name, chip, btn) {
+    const prev = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Đang kiểm tra…";
+    try {
+      const r = await api(`/api/providers/${name}/test`, { method: "POST" });
+      if (r && r.ok) {
+        setChip(chip, "ok", "✓ Đã kết nối");
+        notice("Kết nối OK.", "info");
+      } else {
+        setChip(chip, "fail", "✗ Lỗi");
+        notice("Kết nối lỗi: " + ((r && r.error) || "unknown"), "error");
+      }
+    } catch (e) {
+      setChip(chip, "fail", "✗ Lỗi");
+      const msg = (e.data && (e.data.error || e.data.detail)) || e.message;
+      notice("Kiểm tra lỗi: " + msg, "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prev;
     }
   }
 
