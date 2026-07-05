@@ -70,7 +70,7 @@
     cToggle: $("c-toggle"), cDot: $("c-dot"), cStatusText: $("c-status-text"),
     cStatus: $("c-status"), cRecent: $("c-recent"), cExpand: $("c-expand"),
     cInput: $("c-input"), cOutputDev: $("c-output-dev"), cScreen: $("c-screen"),
-    cTranslate: $("c-translate"), cFolder: $("c-folder"), cExit: $("c-exit"),
+    cTranslate: $("c-translate"), cFolder: $("c-folder"), cExit: $("c-exit"), cSettings: $("c-settings"),
     // expanded
     expanded: $("expanded"),
     xCollapse: $("x-collapse"), xTitle: $("x-title"), xToggle: $("x-toggle"),
@@ -1602,6 +1602,7 @@
     fillModelPicker();
   }
   el.xSettings.addEventListener("click", openSettings);
+  if (el.cSettings) el.cSettings.addEventListener("click", openSettings);
   el.setClose.addEventListener("click", () => { el.settings.hidden = true; });
   el.settings.addEventListener("click", (e) => { if (e.target === el.settings) el.settings.hidden = true; });
 
