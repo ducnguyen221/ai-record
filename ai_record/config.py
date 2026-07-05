@@ -28,6 +28,47 @@ APP_VERSION = "2.0"
 KEYRING_SERVICE = "ai-record"
 SECRET_NAMES = ("hf_token", "gemini_api_key")
 
+# Summarization scenarios (addendum §E2). Each is a named, user-editable prompt
+# template; the transcript is appended (hardened, delimited) by the summarizer.
+# Default scenario is ``reformat`` (lossless structuring with an integrity guard).
+SUMMARY_SCENARIOS: tuple[str, ...] = (
+    "reformat",
+    "minutes",
+    "study_notes",
+    "action_tracker",
+    "article",
+)
+
+DEFAULT_SUMMARY_SCENARIOS: dict[str, str] = {
+    "reformat": (
+        "You are given a meeting transcript. Restructure it WITHOUT changing, adding, "
+        "removing, translating, paraphrasing, or reordering the wording of any utterance. "
+        "You may ONLY: (a) group related consecutive utterances into thematic sections, and "
+        "(b) add Markdown structure — `##` topic headings and bullet lists — while preserving "
+        "each original 'Speaker + [timestamp]' label and its EXACT text. Every original "
+        "utterance's text MUST still appear verbatim in your output. Output Markdown only."
+    ),
+    "minutes": (
+        "Read and understand the whole meeting transcript, then write concise meeting minutes, "
+        "Vietnamese-first. Group by context and include: a short overview, key discussion points, "
+        "decisions made, action items (with owner if stated), and open questions/risks. "
+        "This is a lossy summary. Output Markdown."
+    ),
+    "study_notes": (
+        "Restructure this transcript into NotebookLM-style study notes for self-study: key "
+        "concepts & definitions, a short Q&A / flashcard list, and a 'things to remember' section, "
+        "grouped by topic. Vietnamese-first. Output Markdown."
+    ),
+    "action_tracker": (
+        "From this transcript, extract ONLY a checklist of action items, decisions, owners, and "
+        "deadlines/follow-ups — nothing else. Use Markdown checkboxes. Output Markdown."
+    ),
+    "article": (
+        "Rewrite the discussion in this transcript into a clean, readable article/blog post in "
+        "flowing prose that explains what was covered. Vietnamese-first. Output Markdown."
+    ),
+}
+
 
 # --------------------------------------------------------------------------- #
 # App-data directory helpers
@@ -308,9 +349,12 @@ class Settings:
     max_speakers: int = 8
     pyannote_model: str = "pyannote/speaker-diarization-3.1"
 
-    # summarization (M4 — plumbed)
+    # summarization (M4)
     summarizer_provider: str = "claude_cli"
     summary_prompt: str = ""
+    summary_scenarios: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_SUMMARY_SCENARIOS)
+    )
     summary_use_translation: bool = True
     summary_max_chars: int = 48000
     summary_timeout_s: int = 300

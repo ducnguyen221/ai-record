@@ -479,16 +479,22 @@ class CaptureManager:
         settings,
         on_status: StatusCb | None = None,
         epoch_states: dict[str, SourceEpoch] | None = None,
+        enabled_sources: tuple[str, ...] | list[str] | None = None,
     ) -> None:
         self.settings = settings
         self.on_status: StatusCb = on_status or (lambda *a: None)
         epoch_states = epoch_states or {}
-        self._runners = {
+        # Dictation / single-source support (addendum §E1): only build runners for the
+        # requested sources so a mic-only or loopback-only session never opens the
+        # other device. Default = both.
+        want = set(enabled_sources) if enabled_sources else {"them", "you"}
+        runners = {
             "them": _SourceRunner("them", ring_them, raw_them, settings, self.on_status,
                                   epoch_states.get("them")),
             "you": _SourceRunner("you", ring_you, raw_you, settings, self.on_status,
                                  epoch_states.get("you")),
         }
+        self._runners = {s: r for s, r in runners.items() if s in want}
 
     def start(self) -> list[CaptureSource]:
         up: list[CaptureSource] = []

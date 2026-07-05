@@ -65,6 +65,9 @@ class AppState:
         self.pipeline = None
         self.capture = None
         self.active_session_id: str | None = None
+        # Offline re-diarization progress, keyed by session id (SPEC.md §5.5 tier 2).
+        self.rediarize_state: dict[str, dict] = {}
+        self._rediarize_threads: dict[str, Any] = {}
 
     # -- auth ------------------------------------------------------------- #
     def allowed_origins(self) -> set[str]:
@@ -202,12 +205,21 @@ def create_app(state: AppState) -> FastAPI:
             raise HTTPException(status_code=403, detail="consent not acknowledged")
         if state.pipeline is not None:
             raise HTTPException(status_code=409, detail="already recording")
-        title = (body or {}).get("title") or "meeting"
+        body = body or {}
+        title = body.get("title") or "meeting"
+        mode = body.get("mode") or "meeting"
+        if mode not in ("meeting", "dictation"):
+            mode = "meeting"
+        sources = body.get("sources")
+        if sources is not None:
+            sources = [s for s in sources if s in ("you", "them")]
+            if not sources:
+                raise HTTPException(status_code=422, detail="sources must include 'you' and/or 'them'")
         try:
-            session_id, sources = _start_capture(state, title)
+            session_id, opened = _start_capture(state, title, mode, sources)
         except CaptureError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
-        return {"session_id": session_id, "sources": sources}
+        return {"session_id": session_id, "sources": opened}
 
     @app.post("/api/capture/stop", dependencies=dep)
     async def stop() -> dict:
@@ -236,25 +248,86 @@ def create_app(state: AppState) -> FastAPI:
     async def utterances(sid: str, since_seq: int = 0) -> list[dict]:
         return [u.to_dict() for u in state.store.utterances_since(sid, since_seq)]
 
+    @app.get("/api/languages", dependencies=dep)
+    async def languages() -> dict:
+        from .lang_maps import supported_source_languages
+
+        return {"languages": supported_source_languages(), "target": state.settings.target_lang}
+
     @app.post("/api/sessions/{sid}/speakers/rename", dependencies=dep)
     async def rename(sid: str, body: dict) -> dict:
         if state.active_session_id == sid:
             raise HTTPException(status_code=409, detail="cannot rename during active capture")
         updated = state.store.rename_speaker(sid, body["old"], body["new"])
         state.submit({"type": "rename", "old": body["old"], "new": body["new"]})
-        return {"updated": updated}
+        return {"updated_count": updated}
 
     @app.post("/api/sessions/{sid}/rediarize", dependencies=dep)
     async def rediarize(sid: str) -> dict:
         if state.active_session_id == sid:
             raise HTTPException(status_code=409, detail="cannot re-diarize during active capture")
-        # Tier-2 offline diarization is delivered in M4.
-        raise HTTPException(status_code=501, detail="offline re-diarization arrives in M4")
+        # Validate the session id + ensure it exists before spawning the worker.
+        state.store.load_session(sid)
+        running = state.rediarize_state.get(sid, {}).get("state")
+        if running in ("started", "progress"):
+            raise HTTPException(status_code=409, detail="re-diarization already running")
+        _start_rediarize(state, sid)
+        return {"status": "started"}
+
+    @app.get("/api/sessions/{sid}/rediarize/status", dependencies=dep)
+    async def rediarize_status(sid: str) -> dict:
+        return state.rediarize_state.get(sid, {"state": "idle", "progress": 0.0})
 
     @app.post("/api/sessions/{sid}/summarize", dependencies=dep)
     async def summarize(sid: str, body: dict | None = None) -> dict:
-        # Hardened summarizer arrives in M4.
-        return {"error": "summarization arrives in M4"}
+        from .summarizer import SummarizerUnavailable, build_summary
+
+        body = body or {}
+        scenario = body.get("scenario") or "reformat"
+        provider = body.get("provider") or state.settings.summarizer_provider
+        data = state.store.load_session(sid)
+        try:
+            result = build_summary(data, scenario, provider, state.settings, state.secrets)
+        except SummarizerUnavailable as exc:
+            return {"error": str(exc)}
+        except ValueError as exc:  # unknown scenario
+            raise HTTPException(status_code=422, detail=str(exc))
+        state.store.write_summary(sid, result.markdown, scenario=result.scenario, provider=result.provider)
+        state.submit({"type": "summary", "state": "done", "markdown": result.markdown})
+        return {
+            "markdown": result.markdown,
+            "scenario": result.scenario,
+            "provider": result.provider,
+            "reformat_fallback": result.reformat_fallback,
+        }
+
+    @app.get("/api/sessions/{sid}/summary", dependencies=dep)
+    async def get_summary(sid: str) -> dict:
+        data = state.store.load_session(sid)
+        if not data.summary:
+            raise HTTPException(status_code=404, detail="no summary")
+        return {
+            "markdown": data.summary,
+            "scenario": data.meta.summary_scenario,
+            "summarized_at": data.meta.summarized_at,
+        }
+
+    @app.get("/api/sessions/{sid}/export", dependencies=dep)
+    async def export(sid: str, what: str = "transcript", fmt: str = "md") -> Any:
+        from .export import render_export
+
+        data = state.store.load_session(sid)
+        try:
+            filename, content, media_type = render_export(data, what, fmt)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        from fastapi.responses import Response
+
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.post("/api/sessions/{sid}/recover", dependencies=dep)
     async def recover(sid: str) -> dict:
@@ -415,11 +488,49 @@ def _status(state: AppState) -> dict:
     return base
 
 
-def _start_capture(state: AppState, title: str) -> tuple[str, dict]:
+def _start_capture(
+    state: AppState, title: str, mode: str = "meeting", sources: list[str] | None = None
+) -> tuple[str, dict]:
     """Build the pipeline + capture manager and start recording (real hardware path)."""
     from .capture_helpers import build_and_start
 
-    return build_and_start(state, title)
+    return build_and_start(state, title, mode, sources)
+
+
+def _start_rediarize(state: AppState, sid: str) -> None:
+    """Run tier-2 offline re-diarization in a background thread (SPEC.md §5.5)."""
+    import threading
+
+    from .diarizer import make_offline_diarizer, relabel_them_utterances
+
+    state.rediarize_state[sid] = {"state": "started", "progress": 0.0}
+    state.submit({"type": "rediarize", "state": "started", "detail": sid})
+
+    def _worker() -> None:
+        try:
+            diarizer = make_offline_diarizer(state.settings, state.secrets)
+            ok, why = diarizer.available()
+            if not ok:
+                state.rediarize_state[sid] = {"state": "error", "progress": 0.0, "error": why}
+                state.submit({"type": "rediarize", "state": "error", "detail": why})
+                return
+            session_dir = state.store._dir(sid)
+            state.rediarize_state[sid] = {"state": "progress", "progress": 0.3}
+            state.submit({"type": "rediarize", "state": "progress", "detail": 0.3})
+            spans = diarizer.rediarize(str(session_dir))
+            records = state.store.load_session(sid).utterances
+            new_labels = relabel_them_utterances(records, spans)
+            state.store.rewrite_after_rediarize(sid, new_labels)
+            state.rediarize_state[sid] = {"state": "done", "progress": 1.0, "updated_count": len(new_labels)}
+            state.submit({"type": "rediarize", "state": "done", "detail": len(new_labels)})
+        except Exception as exc:  # HfTokenRequired, FileNotFound, model errors
+            log.warning("rediarize failed for %s: %s", sid, exc)
+            state.rediarize_state[sid] = {"state": "error", "progress": 0.0, "error": str(exc)}
+            state.submit({"type": "rediarize", "state": "error", "detail": str(exc)})
+
+    t = threading.Thread(target=_worker, name=f"rediarize-{sid}", daemon=True)
+    state._rediarize_threads[sid] = t
+    t.start()
 
 
 def _stop_capture(state: AppState) -> str | None:

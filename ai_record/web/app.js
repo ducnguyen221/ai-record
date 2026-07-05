@@ -30,9 +30,25 @@
     wsBackoff: 500,
     wsTimer: null,
     everConnected: false,
+    captureChoice: "both",
+    languages: [],
+    rediarizeTimer: null,
+    currentSummary: null,
   };
 
   const MAX_ROWS = 500;      // cap DOM nodes for very long transcripts
+  const UNKNOWN_SPEAKER = "Speaker ?";
+  const CAPTURE_CHOICES = {
+    both:   { mode: "meeting",   sources: ["you", "them"] },
+    mic:    { mode: "dictation", sources: ["you"] },
+    system: { mode: "meeting",   sources: ["them"] },
+  };
+  const SUMMARY_PROVIDERS = [
+    { value: "claude_cli", label: "Claude CLI" },
+    { value: "codex_cli", label: "Codex CLI" },
+    { value: "gemini", label: "Gemini" },
+    { value: "ollama", label: "Ollama" },
+  ];
 
   /* ============================ DOM SHORTCUTS ============================ */
   const $ = (id) => document.getElementById(id);
@@ -41,11 +57,20 @@
     // compact
     cToggle: $("c-toggle"), cDot: $("c-dot"), cStatusText: $("c-status-text"),
     cStatus: $("c-status"), cRecent: $("c-recent"), cExpand: $("c-expand"),
+    cSource: $("c-source"), cTranslate: $("c-translate"),
     // expanded
     xCollapse: $("x-collapse"), xTitle: $("x-title"), xToggle: $("x-toggle"),
     xDot: $("x-dot"), xStatusText: $("x-status-text"), xStatus: $("x-status"),
     xChips: $("x-chips"), xSearch: $("x-search"), xSettings: $("x-settings"),
     xTranscript: $("x-transcript"), xJump: $("x-jump"),
+    xSource: $("x-source"), xTranslate: $("x-translate"),
+    sumScenario: $("sum-scenario"), sumProvider: $("sum-provider"), sumRun: $("sum-run"),
+    dlTranscriptMd: $("dl-transcript-md"), dlTranscriptTxt: $("dl-transcript-txt"),
+    dlSummaryMd: $("dl-summary-md"), dlSummaryTxt: $("dl-summary-txt"),
+    dlCombinedMd: $("dl-combined-md"), rediarizeRun: $("rediarize-run"),
+    toolStatus: $("tool-status"), summaryArea: $("summary-area"),
+    summaryMeta: $("summary-meta"), summaryFallback: $("summary-fallback"),
+    summaryOutput: $("summary-output"),
     // overlays
     consent: $("consent"), consentAgree: $("consent-agree"),
     preflight: $("preflight"), pfRows: $("pf-rows"), pfPreset: $("pf-preset"),
@@ -74,6 +99,37 @@
     if (res.status === 204) return null;
     const ct = res.headers.get("content-type") || "";
     return ct.includes("application/json") ? res.json() : res.text();
+  }
+
+  async function downloadAttachment(path, fallbackName) {
+    const res = await fetch(path, { headers: { [HEADER]: TOKEN || "" } });
+    if (!res.ok) {
+      const err = new Error(`GET ${path} -> ${res.status}`);
+      err.status = res.status;
+      try { err.data = await res.json(); } catch (_) { /* ignore */ }
+      throw err;
+    }
+    const blob = await res.blob();
+    const filename = filenameFromDisposition(res.headers.get("content-disposition")) || fallbackName;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function filenameFromDisposition(disposition) {
+    if (!disposition) return "";
+    const utf = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf) {
+      try { return decodeURIComponent(utf[1].trim().replace(/^"|"$/g, "")); }
+      catch (_) { return utf[1].trim().replace(/^"|"$/g, ""); }
+    }
+    const plain = disposition.match(/filename="?([^";]+)"?/i);
+    return plain ? plain[1].trim() : "";
   }
 
   /* ============================ NOTICES ============================ */
@@ -192,6 +248,7 @@
       btn.classList.toggle("recording", on);
       btn.textContent = on ? "● Stop" : "Start";
     }
+    for (const sel of [el.cSource, el.xSource]) sel.disabled = on;
   }
 
   function refreshToggleEnabled() {
@@ -202,15 +259,64 @@
     }
   }
 
+  function setCaptureChoice(choice) {
+    state.captureChoice = CAPTURE_CHOICES[choice] ? choice : "both";
+    for (const sel of [el.cSource, el.xSource]) {
+      if (sel.value !== state.captureChoice) sel.value = state.captureChoice;
+    }
+  }
+
+  function captureRequest() {
+    const selected = CAPTURE_CHOICES[state.captureChoice] || CAPTURE_CHOICES.both;
+    return { mode: selected.mode, sources: selected.sources.slice() };
+  }
+
+  function bindCaptureSource(sel) {
+    sel.addEventListener("change", () => setCaptureChoice(sel.value));
+  }
+  bindCaptureSource(el.cSource);
+  bindCaptureSource(el.xSource);
+
+  function updateTranslateButtons() {
+    const on = !!(state.settings && state.settings.translate_enabled);
+    for (const btn of [el.cTranslate, el.xTranslate]) {
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.title = on ? "Translation is on" : "Translation is off";
+    }
+  }
+
+  function refreshTranslationRows() {
+    for (const { record, el: row } of state.utterances.values()) {
+      const tr = row.querySelector(".tr");
+      if (tr) applyTranslation(tr, record);
+    }
+    renderRecent();
+  }
+
+  async function setTranslateEnabled(enabled) {
+    try {
+      const updated = await api("/api/settings", { method: "PUT", body: { translate_enabled: enabled } });
+      state.settings = updated || Object.assign(state.settings || {}, { translate_enabled: enabled });
+      updateTranslateButtons();
+      refreshTranslationRows();
+    } catch (e) {
+      notice("Couldn't update translation: " + (e.message || e), "error");
+    }
+  }
+  el.cTranslate.addEventListener("click", () => setTranslateEnabled(!(state.settings && state.settings.translate_enabled)));
+  el.xTranslate.addEventListener("click", () => setTranslateEnabled(!(state.settings && state.settings.translate_enabled)));
+
   /* ============================ TRANSCRIPT RENDERING ============================ */
   function speakerText(rec) {
-    // Unknown / low-confidence -> "?"
+    // Unknown / low-confidence -> "Speaker ?"
     if (rec.speaker && rec.speaker.trim()) {
       const low = rec.diarization_confidence != null && rec.diarization_confidence < 0.5;
-      return { text: rec.speaker, cls: low ? "unknown" : "" };
+      const label = rec.speaker.trim();
+      const unknown = low || label === "?" || label === UNKNOWN_SPEAKER;
+      return { text: label === "?" ? UNKNOWN_SPEAKER : label, cls: unknown ? "unknown" : "" };
     }
     // No speaker yet: diarization pending placeholder.
-    return { text: "?", cls: "pending" };
+    return { text: UNKNOWN_SPEAKER, cls: "pending unknown" };
   }
 
   function buildRow(rec) {
@@ -227,7 +333,7 @@
     spk.className = "spk";
     const sp = speakerText(rec);
     spk.textContent = sp.text;
-    if (sp.cls) spk.classList.add(sp.cls);
+    if (sp.cls) spk.classList.add(...sp.cls.split(" "));
     if (rec.diarization_confidence != null)
       spk.title = `confidence ${(rec.diarization_confidence * 100).toFixed(0)}% · click to rename`;
     else spk.title = "click to rename";
@@ -265,6 +371,7 @@
 
   function addUtterance(rec) {
     if (rec.seq == null) return;
+    if (rec.session_id && !state.sessionId) state.sessionId = rec.session_id;
     if (state.utterances.has(rec.seq)) { patchUtterance(rec.seq, rec); return; }
     if (rec.seq > state.lastSeq) state.lastSeq = rec.seq;
 
@@ -305,7 +412,7 @@
       const sp = speakerText(rec);
       spk.textContent = sp.text;
       spk.classList.remove("pending", "unknown");
-      if (sp.cls) spk.classList.add(sp.cls);
+      if (sp.cls) spk.classList.add(...sp.cls.split(" "));
       if (rec.diarization_confidence != null)
         spk.title = `confidence ${(rec.diarization_confidence * 100).toFixed(0)}% · click to rename`;
     }
@@ -326,21 +433,27 @@
   /* Rename speaker inline; broadcasts nothing itself — server may echo a rename. */
   function beginRename(spkEl, rec) {
     if (spkEl.querySelector("input")) return;
-    const current = rec.speaker && rec.speaker.trim() ? rec.speaker : "";
+    const current = speakerText(rec).text;
     const input = document.createElement("input");
     input.className = "spk-edit";
-    input.value = current;
+    input.value = current === UNKNOWN_SPEAKER ? "" : current;
     input.placeholder = "Speaker name";
     spkEl.textContent = "";
     spkEl.appendChild(input);
     input.focus();
     input.select();
 
+    let finished = false;
     const finish = (commit) => {
+      if (finished) return;
+      finished = true;
       const val = input.value.trim();
       spkEl.textContent = "";
       if (commit && val && val !== current) {
-        renameSpeaker(current || rec.speaker, val);
+        const sp = speakerText(rec);
+        spkEl.textContent = sp.text;
+        spkEl.className = "spk" + (sp.cls ? " " + sp.cls : "");
+        renameSpeaker(current, val);
       } else {
         const sp = speakerText(rec);
         spkEl.textContent = sp.text;
@@ -354,11 +467,11 @@
     input.addEventListener("blur", () => finish(true));
   }
 
-  // Relabel all rows whose speaker matches `oldName` -> `newName`.
-  function renameSpeaker(oldName, newName) {
+  // Relabel all rows whose displayed speaker matches `oldName` -> `newName`.
+  function applySpeakerRename(oldName, newName) {
     if (!newName) return;
     for (const { record, el: row } of state.utterances.values()) {
-      if ((record.speaker || "") === (oldName || "")) {
+      if (speakerText(record).text === (oldName || "")) {
         record.speaker = newName;
         const spk = row.querySelector(".spk");
         spk.textContent = newName;
@@ -366,6 +479,21 @@
       }
     }
     renderRecent();
+  }
+
+  async function renameSpeaker(oldName, newName) {
+    const sid = activeSessionId();
+    if (!sid) { notice("Start or select a session before renaming speakers.", "warn"); return; }
+    try {
+      await api(`/api/sessions/${encodeURIComponent(sid)}/speakers/rename`, {
+        method: "POST",
+        body: { old: oldName, new: newName },
+      });
+      applySpeakerRename(oldName, newName);
+    } catch (e) {
+      notice("Couldn't rename speaker: " + (e.message || e), "error");
+      applySearchAll();
+    }
   }
 
   /* ============================ COMPACT RECENT LINES ============================ */
@@ -468,6 +596,10 @@
   });
 
   /* ============================ RECORDING CONTROLS ============================ */
+  function activeSessionId() {
+    return state.sessionId;
+  }
+
   async function toggleRecording() {
     if (state.recording) {
       try {
@@ -483,7 +615,11 @@
       if (!state.consentOk) { openConsent(); return; }
       try {
         const title = el.xTitle.value.trim() || undefined;
-        const r = await api("/api/capture/start", { method: "POST", body: { title } });
+        const capture = captureRequest();
+        const r = await api("/api/capture/start", {
+          method: "POST",
+          body: { title, mode: capture.mode, sources: capture.sources },
+        });
         state.sessionId = r && r.session_id;
         setRecording(true);
         renderStatus({ recording: true });
@@ -496,6 +632,225 @@
   }
   el.cToggle.addEventListener("click", toggleRecording);
   el.xToggle.addEventListener("click", toggleRecording);
+
+  /* ============================ SUMMARY / EXPORT / REDIARIZE ============================ */
+  function setToolStatus(text, kind = "info") {
+    el.toolStatus.textContent = text || "";
+    el.toolStatus.className = "tool-status" + (kind === "error" ? " error" : kind === "warn" ? " warn" : "");
+  }
+
+  function renderSummary(payload) {
+    const markdown = payload && payload.markdown ? String(payload.markdown) : "";
+    state.currentSummary = payload || null;
+    el.summaryArea.hidden = !markdown;
+    el.summaryFallback.hidden = !(payload && payload.reformat_fallback);
+    const scenario = payload && payload.scenario ? scenarioLabel(payload.scenario) : "Summary";
+    const provider = payload && payload.provider ? providerLabel(payload.provider) : "";
+    el.summaryMeta.textContent = [scenario, provider].filter(Boolean).join(" · ");
+    renderMarkdown(markdown, el.summaryOutput);
+  }
+
+  function scenarioLabel(value) {
+    const opt = [...el.sumScenario.options].find((o) => o.value === value);
+    return opt ? opt.textContent : value;
+  }
+
+  function providerLabel(value) {
+    const found = SUMMARY_PROVIDERS.find((p) => p.value === value);
+    return found ? found.label : value;
+  }
+
+  function appendInline(parent, text) {
+    const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    let last = 0, match;
+    while ((match = re.exec(text)) !== null) {
+      if (match.index > last) parent.appendChild(document.createTextNode(text.slice(last, match.index)));
+      const token = match[0];
+      if (token.startsWith("**")) {
+        const strong = document.createElement("strong");
+        strong.textContent = token.slice(2, -2);
+        parent.appendChild(strong);
+      } else {
+        const code = document.createElement("code");
+        code.textContent = token.slice(1, -1);
+        parent.appendChild(code);
+      }
+      last = match.index + token.length;
+    }
+    if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  function renderMarkdown(markdown, target) {
+    target.textContent = "";
+    const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+    let paragraph = [];
+    let list = null;
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      const p = document.createElement("p");
+      appendInline(p, paragraph.join(" "));
+      target.appendChild(p);
+      paragraph = [];
+    };
+    const flushList = () => { list = null; };
+
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      if (!line.trim()) { flushParagraph(); flushList(); continue; }
+      const heading = line.match(/^(#{1,3})\s+(.+)$/);
+      if (heading) {
+        flushParagraph(); flushList();
+        const h = document.createElement(`h${heading[1].length}`);
+        appendInline(h, heading[2].trim());
+        target.appendChild(h);
+        continue;
+      }
+      const quote = line.match(/^>\s?(.*)$/);
+      if (quote) {
+        flushParagraph(); flushList();
+        const q = document.createElement("blockquote");
+        appendInline(q, quote[1]);
+        target.appendChild(q);
+        continue;
+      }
+      const bullet = line.match(/^[-*]\s+(.+)$/);
+      const numbered = line.match(/^\d+\.\s+(.+)$/);
+      if (bullet || numbered) {
+        flushParagraph();
+        const ordered = !!numbered;
+        if (!list || (ordered && list.tagName !== "OL") || (!ordered && list.tagName !== "UL")) {
+          list = document.createElement(ordered ? "ol" : "ul");
+          target.appendChild(list);
+        }
+        const li = document.createElement("li");
+        appendInline(li, (bullet || numbered)[1]);
+        list.appendChild(li);
+        continue;
+      }
+      flushList();
+      paragraph.push(line.trim());
+    }
+    flushParagraph();
+  }
+
+  async function runSummary() {
+    const sid = activeSessionId();
+    if (!sid) { notice("Start or select a session before summarizing.", "warn"); return; }
+    const scenario = el.sumScenario.value || "reformat";
+    const provider = el.sumProvider.value || (state.settings && state.settings.summarizer_provider) || "claude_cli";
+    el.sumRun.disabled = true;
+    setToolStatus("Running summary...");
+    try {
+      const payload = await api(`/api/sessions/${encodeURIComponent(sid)}/summarize`, {
+        method: "POST",
+        body: { scenario, provider },
+      });
+      renderSummary(payload);
+      setToolStatus(payload && payload.reformat_fallback
+        ? "Summary formatted deterministically to preserve exact wording."
+        : "Summary ready.");
+    } catch (e) {
+      setToolStatus("Summary failed.", "error");
+      notice("Couldn't summarize session: " + (e.message || e), "error");
+    } finally {
+      el.sumRun.disabled = false;
+    }
+  }
+
+  async function downloadExport(what, fmt) {
+    const sid = activeSessionId();
+    if (!sid) { notice("Start or select a session before downloading.", "warn"); return; }
+    const q = new URLSearchParams({ what, fmt });
+    const fallback = `${sid}-${what}.${fmt}`;
+    setToolStatus(`Preparing ${what} ${fmt.toUpperCase()} download...`);
+    try {
+      await downloadAttachment(`/api/sessions/${encodeURIComponent(sid)}/export?${q}`, fallback);
+      setToolStatus("Download started.");
+    } catch (e) {
+      setToolStatus("Download failed.", "error");
+      notice("Couldn't download export: " + (e.message || e), "error");
+    }
+  }
+
+  function renderRediarizeProgress(st) {
+    const raw = st && st.progress;
+    const pct = raw == null ? null : (raw <= 1 ? Math.round(raw * 100) : Math.round(raw));
+    const stateText = (st && st.state) || "running";
+    setToolStatus(`Re-diarize ${stateText}${pct == null ? "" : ` · ${pct}%`}`);
+  }
+
+  async function pollRediarizeStatus() {
+    const sid = activeSessionId();
+    if (!sid) return;
+    try {
+      const st = await api(`/api/sessions/${encodeURIComponent(sid)}/rediarize/status`);
+      renderRediarizeProgress(st);
+      const done = ["done", "complete", "completed", "success", "succeeded"].includes(String(st.state || "").toLowerCase());
+      const failed = ["error", "failed", "cancelled", "canceled"].includes(String(st.state || "").toLowerCase());
+      if (done) {
+        clearInterval(state.rediarizeTimer);
+        state.rediarizeTimer = null;
+        el.rediarizeRun.disabled = false;
+        setToolStatus("Re-diarize complete. Refreshing speaker labels.");
+        await refreshTranscriptFromServer();
+      } else if (failed) {
+        clearInterval(state.rediarizeTimer);
+        state.rediarizeTimer = null;
+        el.rediarizeRun.disabled = false;
+        setToolStatus("Re-diarize failed.", "error");
+      }
+    } catch (e) {
+      clearInterval(state.rediarizeTimer);
+      state.rediarizeTimer = null;
+      el.rediarizeRun.disabled = false;
+      setToolStatus("Could not read re-diarize status.", "error");
+    }
+  }
+
+  async function runRediarize() {
+    const sid = activeSessionId();
+    if (!sid) { notice("Start or select a session before re-diarizing.", "warn"); return; }
+    el.rediarizeRun.disabled = true;
+    clearInterval(state.rediarizeTimer);
+    setToolStatus("Starting accurate re-diarize...");
+    try {
+      await api(`/api/sessions/${encodeURIComponent(sid)}/rediarize`, { method: "POST" });
+      state.rediarizeTimer = setInterval(pollRediarizeStatus, 1500);
+      await pollRediarizeStatus();
+    } catch (e) {
+      setToolStatus("Re-diarize could not start.", "error");
+      notice("Couldn't start re-diarize: " + (e.message || e), "error");
+      el.rediarizeRun.disabled = false;
+    }
+  }
+
+  function coerceUtteranceRows(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (payload && Array.isArray(payload.records)) return payload.records;
+    if (payload && Array.isArray(payload.utterances)) return payload.utterances;
+    return [];
+  }
+
+  async function refreshTranscriptFromServer() {
+    const sid = activeSessionId();
+    if (!sid) return;
+    try {
+      const rows = coerceUtteranceRows(await api(`/api/sessions/${encodeURIComponent(sid)}/utterances?since_seq=0`));
+      for (const rec of rows) addUtterance(rec);
+      renderRecent();
+      setToolStatus("Speaker labels refreshed.");
+    } catch (e) {
+      setToolStatus("Speaker labels could not be refreshed.", "warn");
+    }
+  }
+
+  el.sumRun.addEventListener("click", runSummary);
+  el.dlTranscriptMd.addEventListener("click", () => downloadExport("transcript", "md"));
+  el.dlTranscriptTxt.addEventListener("click", () => downloadExport("transcript", "txt"));
+  el.dlSummaryMd.addEventListener("click", () => downloadExport("summary", "md"));
+  el.dlSummaryTxt.addEventListener("click", () => downloadExport("summary", "txt"));
+  el.dlCombinedMd.addEventListener("click", () => downloadExport("combined", "md"));
+  el.rediarizeRun.addEventListener("click", runRediarize);
 
   // Session title -> PUT settings? Title belongs to the session; persist on blur if recording.
   el.xTitle.addEventListener("change", () => {
@@ -608,8 +963,10 @@
   el.pfContinue.addEventListener("click", () => { el.preflight.hidden = true; setView("compact"); });
 
   /* ============================ SETTINGS DRAWER ============================ */
-  function openSettings() {
+  async function openSettings() {
     el.settings.hidden = false;
+    buildSettings();
+    await loadLanguages();
     buildSettings();
   }
   el.xSettings.addEventListener("click", openSettings);
@@ -643,6 +1000,50 @@
     wrap.append(input, track);
     input.addEventListener("change", () => onChange(input.checked));
     row.querySelector(".ctl").appendChild(wrap);
+    return row;
+  }
+  function rowLanguages(label, sub, selected, languages) {
+    const row = mkRow(label, sub);
+    const picker = document.createElement("div");
+    picker.className = "lang-picker";
+    const current = Array.isArray(selected) ? selected.slice() : [];
+    const options = languages.length ? languages : current.map((code) => ({ code, label: code }));
+
+    const any = document.createElement("button");
+    any.type = "button";
+    any.className = "lang-chip";
+    any.textContent = "Any non-target";
+    any.setAttribute("aria-pressed", current.length ? "false" : "true");
+    any.addEventListener("click", async () => {
+      await putSetting({ source_languages: [] });
+      buildSettings();
+    });
+    picker.appendChild(any);
+
+    if (!options.length) {
+      const empty = document.createElement("span");
+      empty.className = "lang-empty";
+      empty.textContent = "Language list unavailable";
+      picker.appendChild(empty);
+    }
+
+    for (const lang of options) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "lang-chip";
+      chip.textContent = lang.label || lang.code;
+      chip.title = lang.code;
+      chip.setAttribute("aria-pressed", current.includes(lang.code) ? "true" : "false");
+      chip.addEventListener("click", async () => {
+        const next = current.includes(lang.code)
+          ? current.filter((code) => code !== lang.code)
+          : current.concat(lang.code);
+        await putSetting({ source_languages: next });
+        buildSettings();
+      });
+      picker.appendChild(chip);
+    }
+    row.querySelector(".ctl").appendChild(picker);
     return row;
   }
   function rowText(label, sub, value, onCommit, opts = {}) {
@@ -685,11 +1086,65 @@
     return g;
   }
 
+  function normalizeLanguageEntry(entry) {
+    if (typeof entry === "string") return { code: entry, label: entry };
+    if (!entry || typeof entry !== "object") return null;
+    const code = entry.code || entry.lang || entry.id || entry.value;
+    if (!code) return null;
+    const name = entry.name || entry.label || entry.native_name || entry.display || code;
+    return { code: String(code), label: `${name} (${code})` };
+  }
+
+  function normalizeLanguagesPayload(payload) {
+    let list = payload;
+    if (payload && !Array.isArray(payload) && typeof payload === "object") {
+      list = payload.languages || payload.items || Object.entries(payload).map(([code, name]) => ({ code, name }));
+    }
+    if (!Array.isArray(list)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const item of list) {
+      const lang = normalizeLanguageEntry(item);
+      if (lang && !seen.has(lang.code)) {
+        seen.add(lang.code);
+        out.push(lang);
+      }
+    }
+    return out;
+  }
+
+  async function loadLanguages() {
+    try {
+      state.languages = normalizeLanguagesPayload(await api("/api/languages"));
+    } catch (_) {
+      state.languages = [];
+    }
+  }
+
+  function ensureSelectValue(select, value, label) {
+    if (!value) return;
+    if (![...select.options].some((opt) => opt.value === value)) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label || value;
+      select.appendChild(opt);
+    }
+    select.value = value;
+  }
+
+  function syncSummaryProvider() {
+    const provider = (state.settings && (state.settings.summarizer_provider || state.settings.summary_provider)) || "claude_cli";
+    ensureSelectValue(el.sumProvider, provider, providerLabel(provider));
+  }
+
   async function putSetting(patch) {
     try {
       const updated = await api("/api/settings", { method: "PUT", body: patch });
       state.settings = updated || Object.assign(state.settings || {}, patch);
       applyTheme();
+      updateTranslateButtons();
+      if ("translate_enabled" in patch) refreshTranslationRows();
+      if ("summarizer_provider" in patch || "summary_provider" in patch) syncSummaryProvider();
     } catch (e) {
       notice("Couldn't save setting: " + (e.message || e), "error");
     }
@@ -717,8 +1172,10 @@
     const gTr = group("Translation");
     gTr.appendChild(rowToggle("Translate", "show a translation line under each utterance",
       s.translate_enabled, (v) => putSetting({ translate_enabled: v })));
+    gTr.appendChild(rowLanguages("Source languages", "empty means any non-target language",
+      s.source_languages || [], state.languages));
     gTr.appendChild(rowSelect("Provider", null, s.translation_provider,
-      ["local", "gemini", s.translation_provider].filter(uniq),
+      ["nllb", "gemini", s.translation_provider].filter(uniq),
       (v) => putSetting({ translation_provider: v })));
     gTr.appendChild(rowSelect("Device", null, s.translation_device,
       ["auto", "cuda", "cpu", s.translation_device].filter(uniq),
@@ -764,19 +1221,23 @@
     el.setBody.appendChild(gSess);
     loadSessionsInto();
 
-    /* --- Later versions (disabled) --- */
-    const gM4 = group("Post-processing");
-    const summarize = mkRow("Summarize session", "available in a later version");
-    const sBtn = document.createElement("button");
-    sBtn.className = "btn"; sBtn.textContent = "Summarize"; sBtn.disabled = true;
-    summarize.querySelector(".ctl").appendChild(sBtn);
-    gM4.appendChild(summarize);
-    const rediar = mkRow("Re-diarize", "available in a later version");
-    const rBtn = document.createElement("button");
-    rBtn.className = "btn"; rBtn.textContent = "Re-diarize"; rBtn.disabled = true;
-    rediar.querySelector(".ctl").appendChild(rBtn);
-    gM4.appendChild(rediar);
-    el.setBody.appendChild(gM4);
+    /* --- Summarization --- */
+    const gSum = group("Summarization");
+    const selectedSummaryProvider = s.summarizer_provider || s.summary_provider || "claude_cli";
+    const summaryProviderOptions = SUMMARY_PROVIDERS.slice();
+    if (!summaryProviderOptions.some((p) => p.value === selectedSummaryProvider)) {
+      summaryProviderOptions.push({ value: selectedSummaryProvider, label: selectedSummaryProvider });
+    }
+    gSum.appendChild(rowSelect("Provider", "Gemini/Ollama avoid local agent tools for untrusted transcripts",
+      selectedSummaryProvider,
+      summaryProviderOptions,
+      (v) => {
+        el.sumProvider.value = v;
+        putSetting({ summarizer_provider: v });
+      }));
+    gSum.appendChild(rowToggle("Use translations", "feed Vietnamese text to summaries when available",
+      s.summary_use_translation, (v) => putSetting({ summary_use_translation: v })));
+    el.setBody.appendChild(gSum);
 
     /* --- Legal --- */
     const gLegal = group("Legal");
@@ -972,6 +1433,15 @@
     renderStatus(st);
   }
 
+  function patchFieldsFromMessage(msg) {
+    if (msg.fields && typeof msg.fields === "object") return msg.fields;
+    const fields = {};
+    for (const [key, value] of Object.entries(msg)) {
+      if (key !== "type" && key !== "seq") fields[key] = value;
+    }
+    return fields;
+  }
+
   function handleWsMessage(msg) {
     switch (msg.type) {
       case "utterance":
@@ -980,7 +1450,7 @@
       case "patch":
         if (msg.seq != null) {
           if (msg.seq > state.lastSeq) state.lastSeq = msg.seq;
-          patchUtterance(msg.seq, msg.fields || {});
+          patchUtterance(msg.seq, patchFieldsFromMessage(msg));
         }
         break;
       case "status":
@@ -988,7 +1458,17 @@
         renderStatus(msg);
         break;
       case "rename":
-        renameSpeaker(msg.old, msg.new);
+        applySpeakerRename(msg.old, msg.new);
+        break;
+      case "summary:done":
+        if (msg.markdown) renderSummary(msg);
+        break;
+      case "rediarize:done":
+        setToolStatus("Re-diarize complete. Refreshing speaker labels.");
+        refreshTranscriptFromServer();
+        break;
+      case "rediarize":
+        if (msg.state || msg.progress != null) renderRediarizeProgress(msg);
         break;
       case "error":
         notice(`${msg.message || "Error"}${msg.code ? " (" + msg.code + ")" : ""}`, "error");
@@ -1003,8 +1483,8 @@
   async function catchUp(sinceSeq) {
     if (!state.sessionId) return;
     try {
-      const rows = await api(`/api/sessions/${state.sessionId}/utterances?since_seq=${sinceSeq}`);
-      if (Array.isArray(rows)) for (const rec of rows) addUtterance(rec);
+      const rows = coerceUtteranceRows(await api(`/api/sessions/${encodeURIComponent(state.sessionId)}/utterances?since_seq=${sinceSeq}`));
+      for (const rec of rows) addUtterance(rec);
     } catch (e) { /* best-effort catch-up */ }
   }
 
@@ -1013,6 +1493,8 @@
     state.settings = await api("/api/settings");
     state.consentOk = !!(state.settings && state.settings.consent_acknowledged);
     applyTheme();
+    updateTranslateButtons();
+    syncSummaryProvider();
     refreshToggleEnabled();
     return state.settings;
   }
@@ -1024,6 +1506,7 @@
     // 1) Settings drive consent + theme.
     try {
       await refreshSettings();
+      await loadLanguages();
     } catch (e) {
       notice("Couldn't reach the local service. Some features may be unavailable.", "error");
       state.settings = {};

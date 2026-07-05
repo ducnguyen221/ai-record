@@ -342,7 +342,9 @@ class SessionMeta:
     diarization_enabled: bool = True
     diarization_realtime: bool = True
     speakers: dict[str, str] = field(default_factory=dict)
+    mode: str = "meeting"                     # "meeting" | "dictation" (addendum §E1)
     summary_provider: str = "claude_cli"
+    summary_scenario: str | None = None       # last scenario used (addendum §E2)
     summarized_at: str | None = None
     rediarized_at: str | None = None
     recovered: bool = False
@@ -496,7 +498,7 @@ class SessionStore:
         return self._dir(session_id) / "meta.json"
 
     # -- create ------------------------------------------------------------ #
-    def create(self, title: str = "meeting") -> Session:
+    def create(self, title: str = "meeting", mode: str = "meeting") -> Session:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         session_id = f"{stamp}-{slugify(title)}"
         d = self._dir(session_id)
@@ -506,6 +508,7 @@ class SessionStore:
             session_id=session_id,
             title=title or "meeting",
             created_at=_now_iso(),
+            mode=mode if mode in ("meeting", "dictation") else "meeting",
             sources={},
             hardware_preset=getattr(s, "hardware_preset", "") if s else "",
             translate_enabled=getattr(s, "translate_enabled", False) if s else False,
@@ -602,7 +605,13 @@ class SessionStore:
             return count
 
     # -- summary ----------------------------------------------------------- #
-    def write_summary(self, session_id: str, markdown: str) -> None:
+    def write_summary(
+        self,
+        session_id: str,
+        markdown: str,
+        scenario: str | None = None,
+        provider: str | None = None,
+    ) -> None:
         with self._lock(session_id).write():
             path = self._dir(session_id) / "summary.md"
             if path.exists():
@@ -610,6 +619,10 @@ class SessionStore:
             _atomic_write(path, markdown)
             meta = self._read_meta(session_id)
             meta.summarized_at = _now_iso()
+            if scenario is not None:
+                meta.summary_scenario = scenario
+            if provider is not None:
+                meta.summary_provider = provider
             self._write_meta(meta)
 
     def rewrite_after_rediarize(self, session_id: str, new_labels: dict[int, str]) -> None:

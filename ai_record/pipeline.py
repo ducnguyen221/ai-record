@@ -26,6 +26,7 @@ from .audio.segmenter import Segmenter, SourceEpoch, Utterance
 from .audio.vad import Vad, make_vad
 from .store import SessionStore, UtteranceRecord, _now_iso
 from .transcriber import TranscriberProtocol
+from .translator import should_translate
 
 log = logging.getLogger("ai_record.pipeline")
 
@@ -42,6 +43,11 @@ class _TimedQueue(queue.Queue):
     def get(self, block: bool = True, timeout: float | None = None):
         _ts, item = super().get(block, timeout)
         return item
+
+    def get_with_ts(self, block: bool = True, timeout: float | None = None):
+        """Return ``(enqueue_monotonic, item)`` so the post worker can measure staleness."""
+        ts, item = queue.Queue.get(self, block, timeout)
+        return ts, item
 
     def oldest_age(self) -> float:
         with self.mutex:
@@ -122,6 +128,8 @@ class Pipeline:
         vad_factory: Callable[[], Vad] | None = None,
         ring_seconds: float = 30.0,
         epoch_states: dict[str, SourceEpoch] | None = None,
+        translator=None,
+        diarizer=None,
     ) -> None:
         self.settings = settings
         self.preset = preset
@@ -131,6 +139,10 @@ class Pipeline:
         self.session_id = session.session_id
         self.broadcast = broadcast or (lambda msg: None)
         self.sources = sources
+        # M2/M3 post-processing (SPEC.md §4.5): translation + realtime diarization run
+        # AFTER the STT text is emitted and are delivered as `patch` messages.
+        self.translator = translator
+        self.diarizer = diarizer
 
         cap = int(ring_seconds * settings.target_sample_rate)
         self.rings: dict[str, RingBuffer] = {s: RingBuffer(cap) for s in sources}
@@ -145,12 +157,19 @@ class Pipeline:
         # Set while the ladder is at AUDIO_ONLY: segmenters stop feeding live STT.
         self._audio_only = threading.Event()
         self.stt_queue: _TimedQueue = _TimedQueue(maxsize=64)
+        # Post-processing queue (lower priority than STT, SPEC.md §4.5). Items are
+        # (enqueue_monotonic, UtteranceRecord, Utterance). Only used when a translator
+        # or realtime diarizer is wired in; otherwise M1 behaviour is unchanged.
+        self.post_queue: _TimedQueue = _TimedQueue(maxsize=64)
+        self._post_enabled = translator is not None or diarizer is not None
         self._stop = threading.Event()
         self._eof: dict[str, threading.Event] = {s: threading.Event() for s in sources}
         self._seg_threads: dict[str, threading.Thread] = {}
         self._stt_thread: threading.Thread | None = None
+        self._post_thread: threading.Thread | None = None
         self.ladder = LadderController(settings, transcriber, self._broadcast_status)
         self._utterance_count = 0
+        self._patch_count = 0
 
     # ------------------------------------------------------------------ #
     def start(self) -> None:
@@ -166,6 +185,9 @@ class Pipeline:
             self._seg_threads[s] = t
         self._stt_thread = threading.Thread(target=self._stt_worker, name="stt-worker", daemon=True)
         self._stt_thread.start()
+        if self._post_enabled:
+            self._post_thread = threading.Thread(target=self._post_worker, name="post-worker", daemon=True)
+            self._post_thread.start()
         self._broadcast_status()
 
     def feed(self, source: str, pcm: np.ndarray) -> int:
@@ -178,17 +200,21 @@ class Pipeline:
             self._eof[s].set()
 
     def wait_idle(self, timeout: float = 15.0) -> bool:
-        """Wait until segmenters exit and the STT queue is fully drained."""
+        """Wait until segmenters exit and the STT + post queues are fully drained.
+
+        Draining the post queue too means late translation/diarization patches are
+        persisted before the caller finalizes the session (SPEC.md §4.5).
+        """
         deadline = time.monotonic() + timeout
         for s in self.sources:
             t = self._seg_threads.get(s)
             if t is not None:
                 t.join(timeout=max(0.0, deadline - time.monotonic()))
         while time.monotonic() < deadline:
-            if self.stt_queue.unfinished_tasks == 0:
+            if self.stt_queue.unfinished_tasks == 0 and self.post_queue.unfinished_tasks == 0:
                 return True
             time.sleep(0.02)
-        return self.stt_queue.unfinished_tasks == 0
+        return self.stt_queue.unfinished_tasks == 0 and self.post_queue.unfinished_tasks == 0
 
     def stop(self) -> None:
         self.mark_eof()
@@ -198,6 +224,8 @@ class Pipeline:
             t.join(timeout=2.0)
         if self._stt_thread is not None:
             self._stt_thread.join(timeout=5.0)
+        if self._post_thread is not None:
+            self._post_thread.join(timeout=5.0)
 
     # ------------------------------------------------------------------ #
     def _stt_worker(self) -> None:
@@ -239,6 +267,85 @@ class Pipeline:
         self._utterance_count += 1
         # STT-first: emit immediately (SPEC.md §4.5).
         self.broadcast({"type": "utterance", "record": rec.to_dict()})
+        # Hand off translation + realtime diarization to the post worker (patches).
+        if self._post_enabled:
+            self.post_queue.put((rec, utt))
+
+    # ------------------------------------------------------------------ #
+    def _post_worker(self) -> None:
+        """Drain post_queue: translate + diarize already-emitted utterances (SPEC.md §4.5)."""
+        while not self._stop.is_set():
+            try:
+                enq_ts, item = self.post_queue.get_with_ts(timeout=0.1)
+            except queue.Empty:
+                if all(self._eof[s].is_set() for s in self.sources) and self.post_queue.empty():
+                    time.sleep(0.02)
+                continue
+            rec, utt = item
+            staleness = time.monotonic() - enq_ts
+            try:
+                self._diarize(rec, utt)
+                self._translate(rec, utt, staleness)
+            except Exception as exc:  # never let one item kill the worker
+                log.exception("post worker error: %s", exc)
+            finally:
+                self.post_queue.task_done()
+
+    def _diarize(self, rec: UtteranceRecord, utt: Utterance) -> None:
+        if self.diarizer is None:
+            return
+        if not (self.settings.diarization_enabled and self.settings.diarization_realtime):
+            return
+        if utt.source != "them":
+            return  # mic is always "You"; nothing to patch
+        assignment = self.diarizer.label(utt)
+        fields = {
+            "speaker": assignment.speaker,
+            "diarization_confidence": assignment.confidence,
+            "diarization_source": "realtime",
+            "is_overlap": assignment.is_overlap,
+            "forced_overflow": assignment.forced_overflow,
+        }
+        self._emit_patch(rec.seq, fields)
+
+    def _translate(self, rec: UtteranceRecord, utt: Utterance, staleness: float) -> None:
+        if self.translator is None:
+            return
+        if not should_translate(
+            text=rec.text, lang=rec.lang, lang_prob=rec.lang_prob,
+            duration=rec.duration, settings=self.settings,
+        ):
+            return
+        # Staleness skip (SPEC.md §5.4): the translator is falling behind → don't add lag.
+        if staleness > self.settings.translation_max_staleness_s:
+            self._emit_patch(rec.seq, {"translation": None, "translation_error": False, "stale_skipped": True})
+            return
+        supported = getattr(self.translator, "is_supported", lambda s, t: True)(
+            rec.lang, self.settings.target_lang
+        )
+        if not supported:
+            return  # unmapped language: leave translation null, NOT an error (SPEC.md §5.4)
+        try:
+            result = self.translator.translate(rec.text, rec.lang, self.settings.target_lang)
+        except Exception as exc:  # pragma: no cover - provider raised
+            log.error("translate error: %s", exc)
+            result = None
+        if result is None:
+            self._emit_patch(rec.seq, {"translation": None, "translation_error": True})
+        else:
+            self._emit_patch(rec.seq, {
+                "translation": result,
+                "translation_provider": getattr(self.translator, "name", "nllb"),
+                "translation_error": False,
+            })
+
+    def _emit_patch(self, seq: int, fields: dict) -> None:
+        """Persist a late-field update and broadcast a `patch` message (addendum §E4)."""
+        self.store.patch_utterance(self.session_id, seq, fields)
+        msg = {"type": "patch", "seq": seq}
+        msg.update(fields)
+        self.broadcast(msg)
+        self._patch_count += 1
 
     # ------------------------------------------------------------------ #
     def status(self) -> dict:
@@ -259,6 +366,7 @@ class Pipeline:
             "degraded_states": degraded,
             "dropped_frames": dropped,
             "utterance_count": self._utterance_count,
+            "patch_count": self._patch_count,
         }
 
     def _broadcast_status(self) -> None:

@@ -14,7 +14,9 @@ from .config import resolve_preset
 log = logging.getLogger("ai_record.capture_helpers")
 
 
-def build_and_start(state, title: str) -> tuple[str, dict]:
+def build_and_start(
+    state, title: str, mode: str = "meeting", sources: list[str] | None = None
+) -> tuple[str, dict]:
     from .audio.capture import CaptureManager
     from .pipeline import Pipeline
     from .store import RawSegmentWriter
@@ -23,22 +25,40 @@ def build_and_start(state, title: str) -> tuple[str, dict]:
 
     settings = state.settings
     preset = resolve_preset(settings)
-    session = state.store.create(title)
+    session = state.store.create(title, mode=mode)
 
     from .audio.segmenter import SourceEpoch
 
     epoch_states = {"you": SourceEpoch(), "them": SourceEpoch()}
 
     transcriber = Transcriber(settings, preset, on_status=state.submit)
+
+    # M2/M3 post-processing (lazy, CPU by default per preset; SPEC.md §4.5).
+    translator = None
+    if settings.translate_enabled:
+        from .translator import make_translator
+
+        translator = make_translator(settings, preset, state.secrets)
+    diarizer = None
+    if settings.diarization_enabled and settings.diarization_realtime and preset.diarization_realtime:
+        from .diarizer import make_realtime_diarizer
+
+        diarizer = make_realtime_diarizer(settings, preset)
+
     pipeline = Pipeline(
         settings, preset, transcriber, state.store, session,
         broadcast=state.submit, epoch_states=epoch_states,
+        translator=translator, diarizer=diarizer,
     )
+
+    enabled = tuple(s for s in ("them", "you") if not sources or s in sources) or ("them", "you")
 
     raw_you = raw_them = None
     if settings.persist_audio:
-        raw_you = RawSegmentWriter(session.dir, "you", settings.raw_segment_seconds, settings)
-        raw_them = RawSegmentWriter(session.dir, "them", settings.raw_segment_seconds, settings)
+        if "you" in enabled:
+            raw_you = RawSegmentWriter(session.dir, "you", settings.raw_segment_seconds, settings)
+        if "them" in enabled:
+            raw_them = RawSegmentWriter(session.dir, "them", settings.raw_segment_seconds, settings)
 
     def on_status(source: str, event: str, detail: str) -> None:
         state.submit({"type": "status", "note": f"{source}:{event}:{detail}", "recording": True})
@@ -51,6 +71,7 @@ def build_and_start(state, title: str) -> tuple[str, dict]:
         settings=settings,
         on_status=on_status,
         epoch_states=epoch_states,
+        enabled_sources=enabled,
     )
     up = capture.start()
     if not up:
