@@ -166,7 +166,7 @@ class _suppress:
 
 # --------------------------------------------------------------------------- #
 def create_app(state: AppState) -> FastAPI:
-    app = FastAPI(title="ai-record", version=state.settings.app_version)
+    app = FastAPI(title="AI Record", version=state.settings.app_version)
 
     async def auth(request: Request) -> None:
         token = request.headers.get("X-AI-Record-Token") or request.query_params.get("token")

@@ -1033,11 +1033,11 @@
     return row;
   }
 
-  async function runPreflight() {
+  async function runPreflight(opts) {
     el.pfRows.textContent = "Checking…";
     let pf;
     try { pf = await api("/api/preflight"); }
-    catch (e) { el.pfRows.textContent = ""; el.pfRows.appendChild(pfRow("Preflight request failed", "fail", e.message || "")); return; }
+    catch (e) { el.preflight.hidden = false; el.pfRows.textContent = ""; el.pfRows.appendChild(pfRow("Preflight request failed", "fail", e.message || "")); return; }
 
     el.pfRows.textContent = "";
     // CUDA (+ version)
@@ -1084,6 +1084,17 @@
       w.textContent = "No GPU detected. Real-time transcription, live translation, and speaker labels are limited on CPU; transcripts may lag or run after the session.";
       el.pfPreset.appendChild(w);
     }
+
+    // Auto-skip the preflight gate when nothing is BLOCKING (user request).
+    // hf_terms (HF token) and ollama are optional warnings, not blockers.
+    const blocking = pf.whisper_loadable === false
+      || (typeof pf.disk_free_gb === "number" && pf.disk_free_gb < 2);
+    if (opts && opts.auto && !blocking) {
+      el.preflight.hidden = true;
+      setView("compact");
+    } else {
+      el.preflight.hidden = false;
+    }
   }
   function presetExplain(p) {
     switch (String(p).toLowerCase()) {
@@ -1092,7 +1103,7 @@
       default: return "Selected automatically based on the detected hardware.";
     }
   }
-  el.pfRefresh.addEventListener("click", runPreflight);
+  el.pfRefresh.addEventListener("click", () => runPreflight());
   el.pfContinue.addEventListener("click", () => { el.preflight.hidden = true; setView("compact"); });
 
   /* ============================ SETTINGS DRAWER ============================ */
@@ -1673,9 +1684,8 @@
     // 2) Consent gate.
     if (!state.consentOk) openConsent();
 
-    // 3) Preflight before the first record.
-    el.preflight.hidden = false;
-    runPreflight();
+    // 3) Preflight before the first record — auto-skips the gate unless something blocks.
+    runPreflight({ auto: true });
 
     // 4) Current capture status (in case a session is already running).
     try { applyStatusSnapshot(await api("/api/capture/status")); } catch (_) {}

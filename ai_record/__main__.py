@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from .config import Secrets, Settings, resolve_sessions_root, localappdata_dir
 from .server import AppState, create_app, _stop_capture
@@ -129,8 +130,9 @@ def main() -> None:
                             log.debug("window destroy failed", exc_info=True)
 
             _api = _WindowApi()
+            _icon = str(Path(__file__).resolve().parent / "assets" / "ai-record.ico")
             _api._window = webview.create_window(
-                "ai-record",
+                "AI Record",
                 url,
                 js_api=_api,
                 width=560,
@@ -141,7 +143,10 @@ def main() -> None:
                 resizable=True,
             )
             # Blocks until the user closes the window.
-            webview.start()
+            try:
+                webview.start(icon=_icon)
+            except TypeError:
+                webview.start()  # older pywebview without the icon kwarg
         except Exception as exc:
             log.warning("pywebview unavailable (%s); open the URL manually:\n  %s", exc, url)
             try:

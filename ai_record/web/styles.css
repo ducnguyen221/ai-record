@@ -204,7 +204,13 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   align-items: center;
   gap: 8px;
 }
-.compact-source { min-width: 116px; height: 28px; }
+/* uniform control height across the compact toolbar */
+.compact-toolbar .rec-btn,
+.compact-toolbar .toggle-btn,
+.compact-toolbar .source-select,
+.compact-toolbar .icon-btn { height: 32px; }
+.compact-toolbar .icon-btn { width: 32px; }
+.compact-source { min-width: 116px; }
 .compact-translate { flex: none; }
 .compact-body { flex: 1 1 auto; min-width: 0; }  /* legacy (unused after toolbar redesign) */
 .compact .recent { flex: 1 1 auto; min-height: 0; }   /* transcript fills the width + remaining height */
