@@ -12,7 +12,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import secrets as _secrets
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -41,6 +44,21 @@ class _Client:
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self.lagging = False
         self.lagging_since: float | None = None
+
+
+def _reveal(path: Path) -> None:
+    """Open a folder in the OS file manager (Windows Explorer). Best-effort, non-blocking.
+
+    Overridable/patchable in tests so no real window is spawned. The caller is
+    responsible for confining ``path`` under the sessions root.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    startfile = getattr(os, "startfile", None)
+    if startfile is not None:  # Windows
+        startfile(str(path))  # type: ignore[operator]
+        return
+    opener = "open" if sys.platform == "darwin" else "xdg-open"  # non-Windows dev fallback
+    subprocess.Popen([opener, str(path)])
 
 
 class AppState:
@@ -229,6 +247,21 @@ def create_app(state: AppState) -> FastAPI:
     @app.get("/api/capture/status", dependencies=dep)
     async def status() -> dict:
         return _status(state)
+
+    @app.post("/api/open-folder", dependencies=dep)
+    async def open_folder() -> dict:
+        """Reveal the sessions storage root in Explorer (works while recording)."""
+        _reveal(state.store.root)
+        return {"ok": True, "path": str(state.store.root)}
+
+    @app.post("/api/sessions/{sid}/open-folder", dependencies=dep)
+    async def open_session_folder(sid: str) -> dict:
+        """Reveal a specific session's folder (path-confined via store._dir)."""
+        folder = state.store._dir(sid)  # raises InvalidSessionId -> 404 on traversal
+        if not folder.exists():
+            raise HTTPException(status_code=404, detail="session not found")
+        _reveal(folder)
+        return {"ok": True, "path": str(folder)}
 
     # -- sessions --------------------------------------------------------- #
     @app.get("/api/sessions", dependencies=dep)

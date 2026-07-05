@@ -23,6 +23,38 @@ def client(tmp_path):
         yield c
 
 
+def test_open_folder_root(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr("ai_record.server._reveal", lambda p: calls.append(str(p)))
+    r = client.post("/api/open-folder", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["path"] == str(client.ai_store.root)
+    assert calls == [str(client.ai_store.root)]
+
+
+def test_open_folder_requires_token(client):
+    assert client.post("/api/open-folder").status_code == 401
+
+
+def test_open_session_folder_ok(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr("ai_record.server._reveal", lambda p: calls.append(str(p)))
+    sess = client.ai_store.create("demo")
+    r = client.post(f"/api/sessions/{sess.session_id}/open-folder", headers=H)
+    assert r.status_code == 200
+    assert calls and calls[0].endswith(sess.session_id)
+
+
+def test_open_session_folder_traversal_blocked(client, monkeypatch):
+    def _boom(_p):
+        raise AssertionError("_reveal must not run for a traversal id")
+    monkeypatch.setattr("ai_record.server._reveal", _boom)
+    for sid in ["..%5C..%5Cdocs", "..%2f..%2fx", "C:%5CWindows"]:
+        r = client.post(f"/api/sessions/{sid}/open-folder", headers=H)
+        assert r.status_code in (404, 422), (sid, r.status_code)
+
+
 def test_missing_token_401(client):
     assert client.get("/api/settings").status_code == 401
     assert client.get("/api/settings", headers={"X-AI-Record-Token": "wrong"}).status_code == 401

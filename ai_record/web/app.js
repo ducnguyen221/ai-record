@@ -57,7 +57,7 @@
     // compact
     cToggle: $("c-toggle"), cDot: $("c-dot"), cStatusText: $("c-status-text"),
     cStatus: $("c-status"), cRecent: $("c-recent"), cExpand: $("c-expand"),
-    cSource: $("c-source"), cTranslate: $("c-translate"),
+    cSource: $("c-source"), cTranslate: $("c-translate"), cFolder: $("c-folder"),
     // expanded
     xCollapse: $("x-collapse"), xTitle: $("x-title"), xToggle: $("x-toggle"),
     xDot: $("x-dot"), xStatusText: $("x-status-text"), xStatus: $("x-status"),
@@ -68,6 +68,7 @@
     dlTranscriptMd: $("dl-transcript-md"), dlTranscriptTxt: $("dl-transcript-txt"),
     dlSummaryMd: $("dl-summary-md"), dlSummaryTxt: $("dl-summary-txt"),
     dlCombinedMd: $("dl-combined-md"), rediarizeRun: $("rediarize-run"),
+    openFolder: $("open-folder"),
     toolStatus: $("tool-status"), summaryArea: $("summary-area"),
     summaryMeta: $("summary-meta"), summaryFallback: $("summary-fallback"),
     summaryOutput: $("summary-output"),
@@ -642,6 +643,15 @@
     el.toolStatus.className = "tool-status" + (kind === "error" ? " error" : kind === "warn" ? " warn" : "");
   }
 
+  async function openFolder() {
+    try {
+      const r = await api("/api/open-folder", { method: "POST" });
+      setToolStatus(`Đã mở thư mục lưu: ${r && r.path ? r.path : ""}`);
+    } catch (_e) {
+      setToolStatus("Không mở được thư mục lưu.", "error");
+    }
+  }
+
   function renderSummary(payload) {
     // Error branch: a failed/unavailable summarize (non-ok response) shows the reason
     // in the summary panel instead of a blank "Summary ready" (review I2).
@@ -867,6 +877,8 @@
   el.dlSummaryTxt.addEventListener("click", () => downloadExport("summary", "txt"));
   el.dlCombinedMd.addEventListener("click", () => downloadExport("combined", "md"));
   el.rediarizeRun.addEventListener("click", runRediarize);
+  el.openFolder.addEventListener("click", openFolder);
+  if (el.cFolder) el.cFolder.addEventListener("click", openFolder);
 
   // Session title -> PUT settings? Title belongs to the session; persist on blur if recording.
   el.xTitle.addEventListener("change", () => {
