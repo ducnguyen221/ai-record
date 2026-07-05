@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 import secrets as _secrets
 import socket
+import sys
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 
 from .config import Secrets, Settings, resolve_sessions_root, localappdata_dir
-from .server import AppState, create_app
+from .server import AppState, create_app, _stop_capture
 from .store import SessionStore
 
 log = logging.getLogger("ai_record")
@@ -50,8 +52,17 @@ def _wait_ready(port: int, timeout: float = 15.0) -> bool:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     localappdata_dir().mkdir(parents=True, exist_ok=True)
+    # Log to a file so the app runs windowless (pythonw, no console) but still leaves diagnostics.
+    _handlers: list[logging.Handler] = [
+        RotatingFileHandler(localappdata_dir() / "ai-record.log",
+                            maxBytes=2_000_000, backupCount=3, encoding="utf-8"),
+    ]
+    if sys.stderr is not None:  # console builds only; pythonw has no stderr
+        _handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                        handlers=_handlers)
 
     settings = Settings.load()
     secrets = Secrets()
@@ -81,25 +92,32 @@ def main() -> None:
     log.info("ai-record ready at %s", url)
 
     try:
-        import webview  # type: ignore
-
-        webview.create_window(
-            "ai-record",
-            url,
-            width=520,
-            height=160,
-            frameless=True,
-            on_top=True,
-            resizable=True,
-        )
-        webview.start()
-    except Exception as exc:
-        log.warning("pywebview unavailable (%s); open the URL manually:\n  %s", exc, url)
         try:
-            while server_thread.is_alive():
-                time.sleep(1.0)
-        except KeyboardInterrupt:
-            pass
+            import webview  # type: ignore
+
+            webview.create_window(
+                "ai-record",
+                url,
+                width=520,
+                height=160,
+                frameless=True,
+                on_top=True,
+                resizable=True,
+            )
+            # Blocks until the user closes the window.
+            webview.start()
+        except Exception as exc:
+            log.warning("pywebview unavailable (%s); open the URL manually:\n  %s", exc, url)
+            try:
+                while server_thread.is_alive():
+                    time.sleep(1.0)
+            except KeyboardInterrupt:
+                pass
+    finally:
+        # Window closed (or Ctrl-C): stop capture, finalize the active session,
+        # and join capture/pipeline threads. The daemon server thread dies on exit.
+        log.info("shutting down: stopping capture and finalizing session")
+        _stop_capture(state)
 
 
 if __name__ == "__main__":
