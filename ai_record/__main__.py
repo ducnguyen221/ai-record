@@ -53,6 +53,17 @@ def _wait_ready(port: int, timeout: float = 15.0) -> bool:
 
 def main() -> None:
     localappdata_dir().mkdir(parents=True, exist_ok=True)
+    # pythonw.exe (windowless / desktop shortcut) has NO console: sys.stdout and
+    # sys.stderr are None. Libraries that write there (uvicorn's logging) would then
+    # crash the server thread before it binds -> "server did not become ready".
+    # Point the streams at a file so windowless startup succeeds.
+    if sys.stdout is None or sys.stderr is None:
+        _console = open(localappdata_dir() / "ai-record.console.log", "a",
+                        encoding="utf-8", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = _console
+        if sys.stderr is None:
+            sys.stderr = _console
     # Log to a file so the app runs windowless (pythonw, no console) but still leaves diagnostics.
     _handlers: list[logging.Handler] = [
         RotatingFileHandler(localappdata_dir() / "ai-record.log",
