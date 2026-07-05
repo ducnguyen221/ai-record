@@ -1588,6 +1588,7 @@
     try { pf = await api("/api/preflight"); }
     catch (e) { el.preflight.hidden = false; el.pfRows.textContent = ""; el.pfRows.appendChild(pfRow("Preflight request failed", "fail", e.message || "")); return; }
 
+    state.preflight = pf;   // stash so Settings can show the effective preset model
     el.pfRows.textContent = "";
     // CUDA (+ version)
     el.pfRows.appendChild(pfRow(
@@ -1692,6 +1693,15 @@
     sel.addEventListener("change", () => onChange(sel.value));
     row.querySelector(".ctl").appendChild(sel);
     return row;
+  }
+  // Build options for a "preset-driven" setting: an empty value means "Auto —
+  // follow the detected preset". The Auto option shows the effective value from
+  // preflight (e.g. "large-v3") so the empty override never looks like "tiny".
+  function optsWithAuto(cur, standard, effective) {
+    const auto = { value: "", label: "Auto — theo preset" + (effective ? ` (${effective})` : "") };
+    const list = [auto, ...standard];
+    if (cur && !standard.includes(cur)) list.push(cur);  // preserve a custom override
+    return list;
   }
   function rowToggle(label, sub, checked, onChange) {
     const row = mkRow(label, sub);
@@ -1910,11 +1920,12 @@
     /* --- Hardware --- */
     const gHw = group("Hardware");
     gHw.appendChild(rowReadonly("Detected preset", "auto-selected at launch", s.hardware_preset));
-    gHw.appendChild(rowSelect("Whisper model", null, s.whisper_model,
-      ["tiny", "base", "small", "medium", "large-v3", s.whisper_model].filter(uniq),
+    const pf = state.preflight || {};
+    gHw.appendChild(rowSelect("Whisper model", "Trống = tự chọn theo preset máy", s.whisper_model,
+      optsWithAuto(s.whisper_model, ["tiny", "base", "small", "medium", "large-v3"], pf.whisper_model),
       (v) => putSetting({ whisper_model: v })));
     gHw.appendChild(rowSelect("Compute type", null, s.whisper_compute_type,
-      ["int8", "int8_float16", "float16", "float32", s.whisper_compute_type].filter(uniq),
+      optsWithAuto(s.whisper_compute_type, ["int8", "int8_float16", "float16", "float32"], pf.compute_type),
       (v) => putSetting({ whisper_compute_type: v })));
     gHw.appendChild(rowSelect("Latency mode", null, s.latency_mode,
       ["low", "balanced", "accurate", s.latency_mode].filter(uniq),
