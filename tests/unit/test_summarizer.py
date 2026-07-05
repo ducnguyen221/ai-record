@@ -57,6 +57,33 @@ def test_unknown_scenario_raises(store):
         build_summary(data, "nope", "claude_cli", store.settings, provider_impl=FakeProvider())
 
 
+def test_analyze_scenario_uses_analysis_prompt(store):
+    """The new `analyze` scenario exists and selects a GENERAL-ANALYSIS prompt (critical
+    questions / risks), distinct from a plain summary. reformat is untouched."""
+    from ai_record.config import DEFAULT_SUMMARY_SCENARIOS, SUMMARY_SCENARIOS
+
+    assert "analyze" in SUMMARY_SCENARIOS
+    assert "analyze" in DEFAULT_SUMMARY_SCENARIOS
+
+    data = _session(store, ["alpha", "beta"])
+    fp = FakeProvider()
+    res = build_summary(data, "analyze", "claude_cli", store.settings, provider_impl=fp)
+    assert res.scenario == "analyze"
+    assert res.reformat_fallback is False
+    prompt = fp.calls[0][0].lower()
+    # analysis-specific asks: general analysis + critical questions / risks
+    assert "analysis" in prompt
+    assert "rủi ro" in prompt or "phản biện" in prompt
+
+
+def test_reformat_prompt_unchanged_by_analyze(store):
+    """Adding `analyze` must not alter the reformat prompt."""
+    from ai_record.config import DEFAULT_SUMMARY_SCENARIOS
+
+    assert "verbatim" in DEFAULT_SUMMARY_SCENARIOS["reformat"].lower()
+    assert "analysis" not in DEFAULT_SUMMARY_SCENARIOS["reformat"].lower()
+
+
 # --------------------------------------------------------------------------- #
 # reformat integrity guard
 # --------------------------------------------------------------------------- #

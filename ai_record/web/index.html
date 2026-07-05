@@ -13,22 +13,60 @@
 
 <div id="app" data-view="compact" hidden>
 
+  <!--
+    Two SVG glyphs are reused across both views (compact + expanded). They share the
+    gear icon's stroke language: fill:none, stroke:currentColor, stroke-width 1.6.
+  -->
+
   <!-- ============================ COMPACT BAR ============================ -->
   <section id="compact" class="compact" aria-label="Recorder">
     <!-- All controls on ONE top row -->
     <div class="compact-toolbar">
       <img class="app-logo" src="/static/logo.png" alt="AI Record" draggable="false">
       <button id="c-toggle" class="rec-btn small" type="button" disabled>Start</button>
-      <select id="c-source" class="source-select compact-source" aria-label="Capture source">
-        <option value="both">Both (meeting)</option>
-        <option value="mic">Mic only (dictation)</option>
-        <option value="system">System only</option>
-      </select>
-      <div class="output-dd">
-        <button id="c-output" class="toggle-btn compact-output" type="button"
-                aria-haspopup="true" aria-expanded="false" title="Chọn định dạng lưu">Lưu: md</button>
+
+      <div class="device-group">
+        <select id="c-input" class="source-select device-select" aria-label="Micro (đầu vào)"
+                title="Micro (đầu vào)"></select>
+        <select id="c-output-dev" class="source-select device-select" aria-label="Loa / hệ thống (đầu ra)"
+                title="Loa / hệ thống (đầu ra)"></select>
+        <button id="c-screen" class="icon-btn screen-btn" type="button" disabled
+                title="Quay màn hình / camera (sắp có)" aria-label="Quay màn hình / camera (sắp có)">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 7l-7 5 7 5V7z"></path>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+          </svg>
+        </button>
       </div>
-      <button id="c-translate" class="toggle-btn compact-translate" type="button" aria-pressed="false">Dịch</button>
+
+      <div class="translate-dd">
+        <button id="c-translate" class="icon-btn translate-btn" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-pressed="false" title="Dịch">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 5h7"></path>
+            <path d="M9 3v2c0 4.4-2.7 8-6 9"></path>
+            <path d="M5 9c0 2.1 3 4 6 5"></path>
+            <path d="M12 20l4-9 4 9"></path>
+            <path d="M19.1 18h-6.2"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="output-dd">
+        <button id="c-output" class="icon-btn output-btn" type="button"
+                aria-haspopup="true" aria-expanded="false" title="Định dạng lưu">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          <span class="fmt-badge" hidden></span>
+        </button>
+      </div>
+
       <div class="status-line inline" id="c-status" title="">
         <span class="dot" id="c-dot" data-state="idle"></span>
         <span class="status-text" id="c-status-text">Idle</span>
@@ -45,26 +83,57 @@
   </section>
 
   <!-- ============================ EXPANDED VIEW ============================ -->
-  <section id="expanded" class="expanded" aria-label="Session" hidden>
+  <!-- ONE toolbar; the area under the header swaps between browser + transcript modes. -->
+  <section id="expanded" class="expanded" aria-label="Session" data-mode="browser" hidden>
     <header class="ex-header">
       <img class="app-logo" src="/static/logo.png" alt="AI Record" draggable="false">
-      <button id="x-collapse" class="icon-btn" type="button" title="Collapse" aria-label="Collapse">⤢</button>
+
+      <button id="x-toggle" class="rec-btn small" type="button" disabled>Start</button>
+
+      <div class="device-group">
+        <select id="x-input" class="source-select device-select" aria-label="Micro (đầu vào)"
+                title="Micro (đầu vào)"></select>
+        <select id="x-output-dev" class="source-select device-select" aria-label="Loa / hệ thống (đầu ra)"
+                title="Loa / hệ thống (đầu ra)"></select>
+        <button id="x-screen" class="icon-btn screen-btn" type="button" disabled
+                title="Quay màn hình / camera (sắp có)" aria-label="Quay màn hình / camera (sắp có)">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 7l-7 5 7 5V7z"></path>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+          </svg>
+        </button>
+      </div>
+
+      <div class="translate-dd">
+        <button id="x-translate" class="icon-btn translate-btn" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-pressed="false" title="Dịch">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 5h7"></path>
+            <path d="M9 3v2c0 4.4-2.7 8-6 9"></path>
+            <path d="M5 9c0 2.1 3 4 6 5"></path>
+            <path d="M12 20l4-9 4 9"></path>
+            <path d="M19.1 18h-6.2"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="output-dd">
+        <button id="x-output" class="icon-btn output-btn" type="button"
+                aria-haspopup="true" aria-expanded="false" title="Định dạng lưu">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          <span class="fmt-badge" hidden></span>
+        </button>
+      </div>
 
       <input id="x-title" class="title-input" type="text" placeholder="Untitled session"
              spellcheck="false" autocomplete="off">
-
-      <select id="x-source" class="source-select" aria-label="Capture source">
-        <option value="both">Both (meeting)</option>
-        <option value="mic">Mic only (dictation)</option>
-        <option value="system">System only</option>
-      </select>
-
-      <button id="x-toggle" class="rec-btn small" type="button" disabled>Start</button>
-      <div class="output-dd">
-        <button id="x-output" class="toggle-btn" type="button"
-                aria-haspopup="true" aria-expanded="false" title="Chọn định dạng lưu">Lưu: md</button>
-      </div>
-      <button id="x-translate" class="toggle-btn" type="button" aria-pressed="false">Dịch</button>
 
       <div class="status-line inline" id="x-status" title="">
         <span class="dot" id="x-dot" data-state="idle"></span>
@@ -72,11 +141,6 @@
       </div>
 
       <div class="spacer"></div>
-
-      <div class="search-wrap">
-        <input id="x-search" class="search-input" type="search" placeholder="Search transcript"
-               spellcheck="false" autocomplete="off">
-      </div>
 
       <button id="x-settings" class="icon-btn" type="button" title="Settings" aria-label="Settings">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
@@ -86,65 +150,79 @@
         </svg>
       </button>
 
-      <button id="x-exit" class="icon-btn" type="button" title="Thoát AI Record" aria-label="Thoát">✕ Thoát</button>
+      <button id="x-collapse" class="icon-btn" type="button" title="Collapse" aria-label="Collapse">⤢</button>
+
+      <button id="x-exit" class="icon-btn" type="button" title="Thoát AI Record" aria-label="Thoát">✕</button>
     </header>
 
     <div class="chips" id="x-chips" aria-label="Status details"></div>
 
-    <section class="tools-panel" aria-label="Session tools">
-      <div class="tools-row">
-        <label class="tool-field">
-          <span>Scenario</span>
-          <select id="sum-scenario">
-            <option value="reformat">Reformat</option>
-            <option value="minutes">Meeting minutes</option>
-            <option value="study_notes">Study notes</option>
-            <option value="action_tracker">Action tracker</option>
-            <option value="article">Article</option>
-          </select>
-        </label>
-        <label class="tool-field provider-field">
-          <span>Provider</span>
-          <select id="sum-provider">
-            <option value="claude_cli">Claude CLI</option>
-            <option value="codex_cli">Codex CLI</option>
-            <option value="gemini">Gemini</option>
-            <option value="ollama">Ollama</option>
-          </select>
-        </label>
-        <button id="sum-run" class="btn primary" type="button">Run</button>
+    <!-- ---------- MODE A: session browser (idle, no transcript) ---------- -->
+    <section class="browser-panel" aria-label="Phiên đã lưu">
+      <div class="browser-bar">
+        <input id="browser-search" class="search-input browser-search" type="search"
+               placeholder="Tìm phiên / transcript…" spellcheck="false" autocomplete="off">
+      </div>
+      <div id="session-browser" class="session-browser">
+        <div class="sess-empty">Loading…</div>
+      </div>
+    </section>
 
-        <div class="tool-divider" aria-hidden="true"></div>
+    <!-- ---------- MODE B: a transcript is showing (recording or opened) ---------- -->
+    <section class="transcript-panel" aria-label="Transcript">
+      <div class="action-row">
+        <button id="back-sessions" class="btn" type="button">← Phiên đã lưu</button>
 
-        <button id="copy-transcript" class="btn" type="button">📋 Copy</button>
-        <button id="dl-transcript-md" class="btn" type="button">Transcript .md</button>
-        <button id="dl-transcript-txt" class="btn" type="button">Transcript .txt</button>
-        <button id="dl-summary-md" class="btn" type="button">Summary .md</button>
-        <button id="dl-summary-txt" class="btn" type="button">Summary .txt</button>
-        <button id="dl-combined-md" class="btn" type="button">Combined .md</button>
-
-        <div class="tool-divider" aria-hidden="true"></div>
+        <div class="copy-dd">
+          <button id="copy-transcript" class="btn" type="button" aria-haspopup="true" aria-expanded="false">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none"
+                 stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            Copy <span class="caret" aria-hidden="true">▾</span>
+          </button>
+        </div>
 
         <button id="open-folder" class="btn" type="button">📁 Mở thư mục lưu</button>
-        <button id="rediarize-run" class="btn" type="button">Re-diarize (accurate)</button>
+        <button id="sum-reformat" class="btn primary" type="button">Summary</button>
+        <button id="sum-analyze" class="btn" type="button">Analyze</button>
+
+        <div class="tool-divider" aria-hidden="true"></div>
+
+        <button id="dl-transcript-md" class="btn subtle" type="button">Transcript .md</button>
+        <button id="dl-transcript-txt" class="btn subtle" type="button">.txt</button>
+        <button id="dl-summary-md" class="btn subtle" type="button">Summary .md</button>
+        <button id="dl-summary-txt" class="btn subtle" type="button">.txt</button>
+        <button id="dl-combined-md" class="btn subtle" type="button">Combined .md</button>
+        <button id="rediarize-run" class="btn subtle" type="button">Re-diarize</button>
+
+        <div class="spacer"></div>
+
+        <div class="search-wrap">
+          <input id="x-search" class="search-input" type="search" placeholder="Tìm trong transcript"
+                 spellcheck="false" autocomplete="off">
+        </div>
       </div>
+
       <div id="tool-status" class="tool-status" aria-live="polite"></div>
+
       <div id="summary-area" class="summary-area" hidden>
         <div class="summary-head">
           <span id="summary-meta">Summary</span>
           <span id="summary-fallback" class="fallback-note" hidden>formatted deterministically to preserve exact wording</span>
           <div class="spacer"></div>
           <button id="summary-save" class="btn primary" type="button" hidden>Lưu tóm tắt</button>
-          <button id="summary-copy" class="btn" type="button" hidden>📋 Copy</button>
+          <button id="summary-copy" class="btn" type="button" hidden>Copy</button>
         </div>
         <div id="summary-output" class="summary-output"></div>
       </div>
-    </section>
 
-    <main class="transcript-wrap">
-      <div id="x-transcript" class="transcript" tabindex="0" aria-label="Transcript"></div>
-      <button id="x-jump" class="jump-pill" type="button" hidden>Jump to latest ↓</button>
-    </main>
+      <main class="transcript-wrap">
+        <div id="x-transcript" class="transcript" tabindex="0" aria-label="Transcript"></div>
+        <button id="x-jump" class="jump-pill" type="button" hidden>Jump to latest ↓</button>
+      </main>
+    </section>
   </section>
 
 </div>

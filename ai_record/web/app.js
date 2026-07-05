@@ -30,19 +30,30 @@
     wsBackoff: 500,
     wsTimer: null,
     everConnected: false,
-    captureChoice: "both",
     languages: [],
     rediarizeTimer: null,
     currentSummary: null,
     modelCatalog: null,      // {default, models, current, installed, ollama_available}
+    // --- new: expanded-view content mode + saved-session browsing ---
+    uiMode: "browser",       // 'browser' | 'transcript'
+    openedSessionId: null,   // a saved session opened for viewing (vs. the live one)
+    devices: null,           // {inputs, outputs, available} from /api/audio-devices
+    inputSel: null,          // selected input option value ("off" | "id:<id>")
+    outputSel: null,         // selected output option value
+    sessionsCache: [],       // last /api/sessions payload (for client-side filtering)
+    browserSearch: "",
   };
 
   const MAX_ROWS = 500;      // cap DOM nodes for very long transcripts
   const UNKNOWN_SPEAKER = "Speaker ?";
-  const CAPTURE_CHOICES = {
-    both:   { mode: "meeting",   sources: ["you", "them"] },
-    mic:    { mode: "dictation", sources: ["you"] },
-    system: { mode: "meeting",   sources: ["them"] },
+  // Summary/analyze use fixed scenarios; provider comes from settings.
+  const SCENARIO_LABELS = {
+    reformat: "Tóm tắt",
+    analyze: "Phân tích",
+    minutes: "Meeting minutes",
+    study_notes: "Study notes",
+    action_tracker: "Action tracker",
+    article: "Article",
   };
   const SUMMARY_PROVIDERS = [
     { value: "claude_cli", label: "Claude CLI" },
@@ -58,15 +69,22 @@
     // compact
     cToggle: $("c-toggle"), cDot: $("c-dot"), cStatusText: $("c-status-text"),
     cStatus: $("c-status"), cRecent: $("c-recent"), cExpand: $("c-expand"),
-    cSource: $("c-source"), cTranslate: $("c-translate"), cFolder: $("c-folder"),
+    cInput: $("c-input"), cOutputDev: $("c-output-dev"), cScreen: $("c-screen"),
+    cTranslate: $("c-translate"), cFolder: $("c-folder"),
     // expanded
+    expanded: $("expanded"),
     xCollapse: $("x-collapse"), xTitle: $("x-title"), xToggle: $("x-toggle"),
     xDot: $("x-dot"), xStatusText: $("x-status-text"), xStatus: $("x-status"),
     xChips: $("x-chips"), xSearch: $("x-search"), xSettings: $("x-settings"),
     xExit: $("x-exit"),
     xTranscript: $("x-transcript"), xJump: $("x-jump"),
-    xSource: $("x-source"), xTranslate: $("x-translate"),
-    sumScenario: $("sum-scenario"), sumProvider: $("sum-provider"), sumRun: $("sum-run"),
+    xInput: $("x-input"), xOutputDev: $("x-output-dev"), xScreen: $("x-screen"),
+    xTranslate: $("x-translate"),
+    // browser mode
+    browserSearch: $("browser-search"), sessionBrowser: $("session-browser"),
+    backSessions: $("back-sessions"),
+    // transcript-mode actions
+    sumReformat: $("sum-reformat"), sumAnalyze: $("sum-analyze"),
     copyTranscript: $("copy-transcript"),
     dlTranscriptMd: $("dl-transcript-md"), dlTranscriptTxt: $("dl-transcript-txt"),
     dlSummaryMd: $("dl-summary-md"), dlSummaryTxt: $("dl-summary-txt"),
@@ -168,8 +186,23 @@
     const expanded = view === "expanded";
     $("expanded").hidden = !expanded;
     $("compact").hidden = expanded;
-    if (expanded) { requestResize(900, 640); scrollToLatest(); }
-    else { requestResize(560, 180); }
+    if (expanded) {
+      requestResize(980, 680);
+      // Idle with nothing to show -> session browser; otherwise the transcript.
+      const hasTranscript = state.recording || state.openedSessionId || state.utterances.size > 0;
+      setUiMode(hasTranscript ? "transcript" : "browser");
+    } else {
+      requestResize(560, 200);
+    }
+  }
+
+  // Swap the area under the expanded header between the saved-session browser
+  // (Mode A) and the transcript + actions (Mode B). The toolbar is identical.
+  function setUiMode(mode) {
+    state.uiMode = mode === "transcript" ? "transcript" : "browser";
+    if (el.expanded) el.expanded.dataset.mode = state.uiMode;
+    if (state.uiMode === "browser") loadSessionBrowser();
+    else scrollToLatest();
   }
 
   /* ============================ TIME / TEXT UTILS ============================ */
@@ -253,7 +286,10 @@
       btn.classList.toggle("recording", on);
       btn.textContent = on ? "● Stop" : "Start";
     }
-    for (const sel of [el.cSource, el.xSource]) sel.disabled = on;
+    // Lock device pickers while recording (but keep genuinely-disabled ones disabled).
+    for (const sel of [el.cInput, el.cOutputDev, el.xInput, el.xOutputDev]) {
+      if (sel && !sel.querySelector('option[value="__none__"]')) sel.disabled = on;
+    }
   }
 
   function refreshToggleEnabled() {
@@ -264,30 +300,108 @@
     }
   }
 
-  function setCaptureChoice(choice) {
-    state.captureChoice = CAPTURE_CHOICES[choice] ? choice : "both";
-    for (const sel of [el.cSource, el.xSource]) {
-      if (sel.value !== state.captureChoice) sel.value = state.captureChoice;
+  /* ============================ AUDIO DEVICES ============================ */
+  // Two device pickers (Input = mic, Output = speaker/system) replace the old
+  // Both/Mic/System select. Compact + expanded share the same selection via
+  // state.inputSel / state.outputSel (option values "off" | "id:<id>").
+  async function loadAudioDevices() {
+    try {
+      state.devices = await api("/api/audio-devices");
+    } catch (_) {
+      state.devices = { inputs: [], outputs: [], available: false };
+    }
+    fillDeviceSelects();
+  }
+
+  function fillDeviceSelects() {
+    const d = state.devices || { inputs: [], outputs: [], available: false };
+    fillOneDeviceSelect(el.cInput, d.inputs, d.available, "input");
+    fillOneDeviceSelect(el.xInput, d.inputs, d.available, "input");
+    fillOneDeviceSelect(el.cOutputDev, d.outputs, d.available, "output");
+    fillOneDeviceSelect(el.xOutputDev, d.outputs, d.available, "output");
+  }
+
+  function fillOneDeviceSelect(sel, devices, available, kind) {
+    if (!sel) return;
+    sel.textContent = "";
+    if (!available || !devices || !devices.length) {
+      const opt = document.createElement("option");
+      opt.value = "__none__";
+      opt.textContent = "Không tìm thấy thiết bị";
+      opt.disabled = true;
+      opt.selected = true;
+      sel.appendChild(opt);
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = state.recording;
+
+    const off = document.createElement("option");
+    off.value = "off";
+    off.textContent = "Tắt";
+    sel.appendChild(off);
+
+    let defaultVal = null;
+    for (const dev of devices) {
+      const opt = document.createElement("option");
+      opt.value = "id:" + String(dev.id);
+      opt.textContent = dev.name || String(dev.id);
+      opt.title = dev.name || "";
+      sel.appendChild(opt);
+      if (dev.default && defaultVal == null) defaultVal = opt.value;
+    }
+
+    const shared = kind === "input" ? state.inputSel : state.outputSel;
+    let val = shared || defaultVal || "off";
+    if (![...sel.options].some((o) => o.value === val)) val = defaultVal || "off";
+    sel.value = val;
+    if (kind === "input") state.inputSel = val; else state.outputSel = val;
+  }
+
+  function syncDeviceSelects(kind, val) {
+    if (kind === "input") {
+      state.inputSel = val;
+      for (const sel of [el.cInput, el.xInput]) if (sel && sel.value !== val && [...sel.options].some((o) => o.value === val)) sel.value = val;
+    } else {
+      state.outputSel = val;
+      for (const sel of [el.cOutputDev, el.xOutputDev]) if (sel && sel.value !== val && [...sel.options].some((o) => o.value === val)) sel.value = val;
     }
   }
 
-  function captureRequest() {
-    const selected = CAPTURE_CHOICES[state.captureChoice] || CAPTURE_CHOICES.both;
-    return { mode: selected.mode, sources: selected.sources.slice() };
+  function bindDeviceSelect(sel, kind) {
+    if (!sel) return;
+    sel.addEventListener("change", () => syncDeviceSelects(kind, sel.value));
+    // Refresh the device list when the user reaches for the picker.
+    sel.addEventListener("focus", () => { loadAudioDevices(); });
+  }
+  bindDeviceSelect(el.cInput, "input");
+  bindDeviceSelect(el.xInput, "input");
+  bindDeviceSelect(el.cOutputDev, "output");
+  bindDeviceSelect(el.xOutputDev, "output");
+
+  // Resolve an option value ("off" | "id:<id>") back to the backend device id.
+  function resolveDeviceId(val, list) {
+    if (!val || val === "off" || val === "__none__") return null;
+    const raw = val.startsWith("id:") ? val.slice(3) : val;
+    const dev = (list || []).find((d) => String(d.id) === raw);
+    return dev ? dev.id : raw;
   }
 
-  function bindCaptureSource(sel) {
-    sel.addEventListener("change", () => setCaptureChoice(sel.value));
+  function deviceRequest() {
+    const d = state.devices || {};
+    return {
+      input_device: resolveDeviceId(state.inputSel, d.inputs),
+      output_device: resolveDeviceId(state.outputSel, d.outputs),
+    };
   }
-  bindCaptureSource(el.cSource);
-  bindCaptureSource(el.xSource);
 
   function updateTranslateButtons() {
     const on = !!(state.settings && state.settings.translate_enabled);
     for (const btn of [el.cTranslate, el.xTranslate]) {
       btn.setAttribute("aria-pressed", on ? "true" : "false");
-      btn.title = on ? "Translation is on" : "Translation is off";
+      btn.title = on ? "Dịch: bật" : "Dịch: tắt";
     }
+    refreshTranslatePops();
   }
 
   function refreshTranslationRows() {
@@ -308,8 +422,119 @@
       notice("Couldn't update translation: " + (e.message || e), "error");
     }
   }
-  el.cTranslate.addEventListener("click", () => setTranslateEnabled(!(state.settings && state.settings.translate_enabled)));
-  el.xTranslate.addEventListener("click", () => setTranslateEnabled(!(state.settings && state.settings.translate_enabled)));
+  /* ============================ TRANSLATE POPOVER ============================ */
+  // The translate icon opens a small popover: on/off toggle + From/To selects.
+  // From includes an "Auto" option. Applying writes translate_enabled / target_lang
+  // / source_languages via PUT /api/settings. The icon shows an active state when on.
+  const translateDropdowns = [];  // { btn, pop, onInput, fromSel, toSel }
+
+  function langOptions() {
+    const list = (state.languages && state.languages.length)
+      ? state.languages.slice()
+      : [{ code: "en", label: "English (en)" }, { code: "vi", label: "Vietnamese (vi)" }];
+    // Guarantee the two defaults are always selectable.
+    for (const need of [{ code: "en", label: "English (en)" }, { code: "vi", label: "Vietnamese (vi)" }]) {
+      if (!list.some((l) => l.code === need.code)) list.push(need);
+    }
+    return list;
+  }
+
+  function fillLangSelect(sel, includeAuto) {
+    sel.textContent = "";
+    if (includeAuto) {
+      const o = document.createElement("option");
+      o.value = "auto";
+      o.textContent = "Auto (mọi ngôn ngữ)";
+      sel.appendChild(o);
+    }
+    for (const l of langOptions()) {
+      const o = document.createElement("option");
+      o.value = l.code;
+      o.textContent = l.label || l.code;
+      sel.appendChild(o);
+    }
+  }
+
+  function refreshTranslatePops() {
+    if (!translateDropdowns.length) return;
+    const s = state.settings || {};
+    const on = !!s.translate_enabled;
+    const src = Array.isArray(s.source_languages) ? s.source_languages : [];
+    // Reflect settings; default From=en, To=vi. A specific source language wins;
+    // otherwise fall back to the en default (Auto stays a selectable option).
+    const fromVal = src.length ? src[0] : "en";
+    const toVal = s.target_lang || "vi";
+    for (const dd of translateDropdowns) {
+      dd.onInput.checked = on;
+      fillLangSelect(dd.fromSel, true);
+      fillLangSelect(dd.toSel, false);
+      ensureSelectValue(dd.fromSel, fromVal, fromVal);
+      ensureSelectValue(dd.toSel, toVal, toVal);
+    }
+  }
+
+  function registerTranslateDropdown(btnId) {
+    const btn = $(btnId);
+    if (!btn) return;
+    const wrap = btn.parentNode;  // .translate-dd (relative)
+    const pop = document.createElement("div");
+    pop.className = "translate-pop";
+    pop.hidden = true;
+
+    const toggle = document.createElement("label");
+    toggle.className = "tp-toggle";
+    const onInput = document.createElement("input");
+    onInput.type = "checkbox";
+    const onText = document.createElement("span");
+    onText.textContent = "Bật dịch";
+    toggle.append(onInput, onText);
+    onInput.addEventListener("change", () => setTranslateEnabled(onInput.checked));
+
+    const langs = document.createElement("div");
+    langs.className = "tp-langs";
+    const fromField = document.createElement("div");
+    fromField.className = "tp-field";
+    const fromCap = document.createElement("small");
+    fromCap.textContent = "Dịch từ";
+    const fromSel = document.createElement("select");
+    fromSel.className = "tp-select";
+    fromField.append(fromCap, fromSel);
+    const arrow = document.createElement("span");
+    arrow.className = "tp-arrow";
+    arrow.textContent = "→";
+    const toField = document.createElement("div");
+    toField.className = "tp-field";
+    const toCap = document.createElement("small");
+    toCap.textContent = "Sang";
+    const toSel = document.createElement("select");
+    toSel.className = "tp-select";
+    toField.append(toCap, toSel);
+    langs.append(fromField, arrow, toField);
+
+    fromSel.addEventListener("change", () => {
+      putSetting({ source_languages: fromSel.value === "auto" ? [] : [fromSel.value] });
+    });
+    toSel.addEventListener("change", () => putSetting({ target_lang: toSel.value }));
+
+    pop.append(toggle, langs);
+    wrap.appendChild(pop);
+
+    const dd = { btn, pop, onInput, fromSel, toSel };
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = pop.hidden;
+      closeAllPops();
+      if (willOpen) {
+        refreshTranslatePops();
+        pop.hidden = false;
+        btn.setAttribute("aria-expanded", "true");
+      }
+    });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    translateDropdowns.push(dd);
+  }
+  registerTranslateDropdown("c-translate");
+  registerTranslateDropdown("x-translate");
 
   /* ============================ OUTPUT FORMATS DROPDOWN ============================ */
   // A pre-Start multi-select choosing which artefacts a session saves. Two identical
@@ -322,7 +547,7 @@
     { key: "summary", label: "AI summary — tóm tắt tự động" },
   ];
   const OUTPUT_ORDER = OUTPUT_OPTIONS.map((o) => o.key);
-  const outputDropdowns = [];  // { btn, pop, checks: Map<key, input> }
+  const outputDropdowns = [];  // { btn, pop, checks: Map<key, input>, badge }
 
   // Current formats as a Set: sanitize to known keys and always include "md".
   function currentOutputFormats() {
@@ -330,12 +555,6 @@
     const set = new Set((Array.isArray(raw) ? raw : []).filter((f) => OUTPUT_ORDER.includes(f)));
     set.add("md");
     return set;
-  }
-
-  function outputLabel(set) {
-    const on = OUTPUT_ORDER.filter((k) => set.has(k));
-    if (on.length <= 2) return "Lưu: " + on.join(", ");
-    return `Lưu: ${on[0]} +${on.length - 1}`;
   }
 
   async function setOutputFormat(key, on) {
@@ -347,19 +566,29 @@
     refreshOutputDropdowns();
   }
 
-  function closeAllOutputPops() {
+  // Close every popover in the toolbar (output formats, translate, copy).
+  function closeAllPops() {
     for (const d of outputDropdowns) {
       d.pop.hidden = true;
       d.btn.setAttribute("aria-expanded", "false");
+    }
+    for (const d of translateDropdowns) {
+      d.pop.hidden = true;
+      d.btn.setAttribute("aria-expanded", "false");
+    }
+    if (copyDropdown) {
+      copyDropdown.pop.hidden = true;
+      copyDropdown.btn.setAttribute("aria-expanded", "false");
     }
   }
 
   function refreshOutputDropdowns() {
     const set = currentOutputFormats();
-    const label = outputLabel(set);
+    const on = OUTPUT_ORDER.filter((k) => set.has(k));
     for (const d of outputDropdowns) {
-      d.btn.textContent = label;
       for (const [key, cb] of d.checks) cb.checked = set.has(key);
+      if (d.badge) d.badge.hidden = on.length <= 1;   // dot when >1 format selected
+      d.btn.title = "Định dạng lưu: " + on.join(", ");
     }
   }
 
@@ -386,18 +615,19 @@
       pop.appendChild(row);
     }
     wrap.appendChild(pop);
+    const badge = btn.querySelector(".fmt-badge");
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const willOpen = pop.hidden;
-      closeAllOutputPops();
+      closeAllPops();
       if (willOpen) { refreshOutputDropdowns(); pop.hidden = false; btn.setAttribute("aria-expanded", "true"); }
     });
     pop.addEventListener("click", (e) => e.stopPropagation());
-    outputDropdowns.push({ btn, pop, checks });
+    outputDropdowns.push({ btn, pop, checks, badge });
   }
   registerOutputDropdown("c-output");
   registerOutputDropdown("x-output");
-  document.addEventListener("click", closeAllOutputPops);
+  document.addEventListener("click", closeAllPops);
 
   /* ============================ TRANSCRIPT RENDERING ============================ */
   function speakerText(rec) {
@@ -693,7 +923,7 @@
 
   /* ============================ RECORDING CONTROLS ============================ */
   function activeSessionId() {
-    return state.sessionId;
+    return state.openedSessionId || state.sessionId;
   }
 
   async function toggleRecording() {
@@ -709,19 +939,28 @@
       }
     } else {
       if (!state.consentOk) { openConsent(); return; }
+      const req = deviceRequest();
+      if (req.input_device == null && req.output_device == null) {
+        notice("Chọn ít nhất một nguồn: micro hoặc loa/hệ thống.", "warn");
+        return;
+      }
       try {
         const title = el.xTitle.value.trim() || undefined;
-        const capture = captureRequest();
+        // A new live session replaces any opened saved session + its transcript.
+        state.openedSessionId = null;
+        clearTranscript();
         const r = await api("/api/capture/start", {
           method: "POST",
-          body: { title, mode: capture.mode, sources: capture.sources },
+          body: { title, input_device: req.input_device, output_device: req.output_device },
         });
         state.sessionId = r && r.session_id;
         setRecording(true);
         renderStatus({ recording: true });
+        setUiMode("transcript");
         notice("Recording started.", "info");
       } catch (e) {
         if (e.status === 403) { openConsent(); notice("Please acknowledge consent before recording.", "warn"); }
+        else if (e.status === 422) notice("Chọn ít nhất một nguồn để ghi (micro hoặc loa).", "warn");
         else notice("Couldn't start recording: " + (e.message || e), "error");
       }
     }
@@ -736,9 +975,13 @@
   }
 
   async function openFolder() {
+    // A saved session opens its own folder; otherwise the default sessions root.
+    const sid = state.openedSessionId;
     try {
-      const r = await api("/api/open-folder", { method: "POST" });
-      setToolStatus(`Đã mở thư mục lưu: ${r && r.path ? r.path : ""}`);
+      const r = sid
+        ? await api(`/api/sessions/${encodeURIComponent(sid)}/open-folder`, { method: "POST" })
+        : await api("/api/open-folder", { method: "POST" });
+      setToolStatus(`Đã mở thư mục lưu${r && r.path ? ": " + r.path : ""}`);
     } catch (_e) {
       setToolStatus("Không mở được thư mục lưu.", "error");
     }
@@ -780,11 +1023,52 @@
     return lines.join("\n");
   }
 
-  async function copyTranscript() {
-    const text = buildTranscriptText();
+  // "Text only" variant: just the concatenated spoken text, no speaker/timestamp.
+  function buildTranscriptPlainText() {
+    const seqs = [...state.utterances.keys()].sort((a, b) => a - b);
+    return seqs
+      .map((s) => (state.utterances.get(s).record.text || "").trim())
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  async function copyTranscript(withSpeakers) {
+    const text = withSpeakers ? buildTranscriptText() : buildTranscriptPlainText();
     if (!text.trim()) { setToolStatus("Chưa có nội dung để copy.", "warn"); return; }
     const ok = await copyText(text);
     setToolStatus(ok ? "Đã copy" : "Không copy được.", ok ? "info" : "error");
+  }
+
+  /* ---- Copy dropdown: "Chỉ văn bản" | "Kèm người nói" ---- */
+  let copyDropdown = null;
+  function registerCopyDropdown() {
+    const btn = el.copyTranscript;
+    if (!btn) return;
+    const wrap = btn.parentNode;  // .copy-dd
+    const pop = document.createElement("div");
+    pop.className = "copy-pop";
+    pop.hidden = true;
+    const opts = [
+      { label: "Chỉ văn bản", withSpeakers: false },
+      { label: "Kèm người nói", withSpeakers: true },
+    ];
+    for (const o of opts) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "copy-opt";
+      b.textContent = o.label;
+      b.addEventListener("click", () => { closeAllPops(); copyTranscript(o.withSpeakers); });
+      pop.appendChild(b);
+    }
+    wrap.appendChild(pop);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = pop.hidden;
+      closeAllPops();
+      if (willOpen) { pop.hidden = false; btn.setAttribute("aria-expanded", "true"); }
+    });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    copyDropdown = { btn, pop };
   }
 
   async function copySummary() {
@@ -849,8 +1133,7 @@
   }
 
   function scenarioLabel(value) {
-    const opt = [...el.sumScenario.options].find((o) => o.value === value);
-    return opt ? opt.textContent : value;
+    return SCENARIO_LABELS[value] || value;
   }
 
   function providerLabel(value) {
@@ -931,13 +1214,14 @@
     flushParagraph();
   }
 
-  async function runSummary() {
+  // Summary (reformat, verbatim grouping) and Analyze (general analysis + critique)
+  // are the same endpoint with a fixed scenario. The provider comes from settings.
+  async function runSummarize(scenario, btn) {
     const sid = activeSessionId();
-    if (!sid) { notice("Start or select a session before summarizing.", "warn"); return; }
-    const scenario = el.sumScenario.value || "reformat";
-    const provider = el.sumProvider.value || (state.settings && state.settings.summarizer_provider) || "claude_cli";
-    el.sumRun.disabled = true;
-    setToolStatus("Running summary...");
+    if (!sid) { notice("Bắt đầu hoặc chọn một phiên trước khi tóm tắt.", "warn"); return; }
+    const provider = (state.settings && (state.settings.summarizer_provider || state.settings.summary_provider)) || "claude_cli";
+    if (btn) btn.disabled = true;
+    setToolStatus(scenario === "analyze" ? "Đang phân tích..." : "Đang tóm tắt...");
     try {
       const payload = await api(`/api/sessions/${encodeURIComponent(sid)}/summarize`, {
         method: "POST",
@@ -945,16 +1229,16 @@
       });
       renderSummary(payload);
       setToolStatus(payload && payload.reformat_fallback
-        ? "Summary formatted deterministically to preserve exact wording."
-        : "Summary ready.");
+        ? "Đã định dạng, giữ nguyên câu chữ."
+        : (scenario === "analyze" ? "Phân tích xong." : "Tóm tắt xong."));
     } catch (e) {
       // Surface the backend reason (503 unavailable / 502 provider error) in the panel.
       const errText = (e.data && e.data.error) || e.message || String(e);
       renderSummary({ error: errText });
-      setToolStatus("Summary failed.", "error");
-      notice("Couldn't summarize session: " + errText, "error");
+      setToolStatus(scenario === "analyze" ? "Phân tích thất bại." : "Tóm tắt thất bại.", "error");
+      notice("Không xử lý được phiên: " + errText, "error");
     } finally {
-      el.sumRun.disabled = false;
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -1045,10 +1329,11 @@
     }
   }
 
-  el.sumRun.addEventListener("click", runSummary);
+  if (el.sumReformat) el.sumReformat.addEventListener("click", () => runSummarize("reformat", el.sumReformat));
+  if (el.sumAnalyze) el.sumAnalyze.addEventListener("click", () => runSummarize("analyze", el.sumAnalyze));
   if (el.summarySave) el.summarySave.addEventListener("click", saveSummary);
   if (el.summaryCopy) el.summaryCopy.addEventListener("click", copySummary);
-  if (el.copyTranscript) el.copyTranscript.addEventListener("click", copyTranscript);
+  registerCopyDropdown();
   el.dlTranscriptMd.addEventListener("click", () => downloadExport("transcript", "md"));
   el.dlTranscriptTxt.addEventListener("click", () => downloadExport("transcript", "txt"));
   el.dlSummaryMd.addEventListener("click", () => downloadExport("summary", "md"));
@@ -1376,11 +1661,6 @@
     select.value = value;
   }
 
-  function syncSummaryProvider() {
-    const provider = (state.settings && (state.settings.summarizer_provider || state.settings.summary_provider)) || "claude_cli";
-    ensureSelectValue(el.sumProvider, provider, providerLabel(provider));
-  }
-
   async function putSetting(patch) {
     try {
       const updated = await api("/api/settings", { method: "PUT", body: patch });
@@ -1388,7 +1668,6 @@
       applyTheme();
       updateTranslateButtons();
       if ("translate_enabled" in patch) refreshTranslationRows();
-      if ("summarizer_provider" in patch || "summary_provider" in patch) syncSummaryProvider();
     } catch (e) {
       notice("Couldn't save setting: " + (e.message || e), "error");
     }
@@ -1412,12 +1691,17 @@
       (v) => putSetting({ latency_mode: v })));
     el.setBody.appendChild(gHw);
 
-    /* --- Translation --- */
-    const gTr = group("Translation");
-    gTr.appendChild(rowToggle("Translate", "show a translation line under each utterance",
-      s.translate_enabled, (v) => putSetting({ translate_enabled: v })));
-    gTr.appendChild(rowLanguages("Source languages", "empty means any non-target language",
-      s.source_languages || [], state.languages));
+    /* --- Translation: two dropdowns (From / To); on/off lives in the toolbar popover --- */
+    const gTr = group("Dịch");
+    const src = Array.isArray(s.source_languages) ? s.source_languages : [];
+    const fromVal = src.length ? src[0] : "en";
+    const langOpts = langOptions().map((l) => ({ value: l.code, label: l.label || l.code }));
+    gTr.appendChild(rowSelect("Dịch từ", "ngôn ngữ nguồn (Auto = mọi ngôn ngữ)", fromVal,
+      [{ value: "auto", label: "Auto (mọi ngôn ngữ)" }].concat(langOpts),
+      (v) => putSetting({ source_languages: v === "auto" ? [] : [v] })));
+    gTr.appendChild(rowSelect("Dịch sang", "ngôn ngữ đích", s.target_lang || "vi",
+      langOpts,
+      (v) => putSetting({ target_lang: v })));
     gTr.appendChild(rowSelect("Provider", null, s.translation_provider,
       ["nllb", "gemini", s.translation_provider].filter(uniq),
       (v) => putSetting({ translation_provider: v })));
@@ -1477,20 +1761,17 @@
     el.setBody.appendChild(gSess);
     loadSessionsInto();
 
-    /* --- Summarization --- */
-    const gSum = group("Summarization");
+    /* --- Tóm tắt (Summary/Analyze use this provider + fixed scenarios) --- */
+    const gSum = group("Tóm tắt");
     const selectedSummaryProvider = s.summarizer_provider || s.summary_provider || "claude_cli";
     const summaryProviderOptions = SUMMARY_PROVIDERS.slice();
     if (!summaryProviderOptions.some((p) => p.value === selectedSummaryProvider)) {
       summaryProviderOptions.push({ value: selectedSummaryProvider, label: selectedSummaryProvider });
     }
-    gSum.appendChild(rowSelect("Provider", "Gemini/Ollama avoid local agent tools for untrusted transcripts",
+    gSum.appendChild(rowSelect("Provider", "dùng cho nút Summary (tóm tắt) và Analyze (phân tích)",
       selectedSummaryProvider,
       summaryProviderOptions,
-      (v) => {
-        el.sumProvider.value = v;
-        putSetting({ summarizer_provider: v });
-      }));
+      (v) => putSetting({ summarizer_provider: v })));
     gSum.appendChild(rowToggle("Use translations", "feed Vietnamese text to summaries when available",
       s.summary_use_translation, (v) => putSetting({ summary_use_translation: v })));
     gSum.appendChild(buildModelPickerRow());
@@ -1703,6 +1984,126 @@
     return item;
   }
 
+  /* ============================ SESSION BROWSER (Mode A) ============================ */
+  // The idle expanded view shows a grid of saved sessions. Clicking one loads its
+  // transcript and switches to Mode B (transcript). A search box filters by
+  // title/date. This is separate from the compact settings-drawer session list.
+  async function loadSessionBrowser() {
+    const cont = el.sessionBrowser;
+    if (!cont) return;
+    cont.textContent = "";
+    const loading = document.createElement("div");
+    loading.className = "sess-empty";
+    loading.textContent = "Loading…";
+    cont.appendChild(loading);
+    let sessions;
+    try {
+      sessions = await api("/api/sessions");
+    } catch (e) {
+      cont.textContent = "";
+      const p = document.createElement("div");
+      p.className = "sess-empty";
+      p.textContent = "Không tải được danh sách phiên.";
+      cont.appendChild(p);
+      return;
+    }
+    state.sessionsCache = Array.isArray(sessions) ? sessions : [];
+    renderSessionBrowser();
+  }
+
+  function renderSessionBrowser() {
+    const cont = el.sessionBrowser;
+    if (!cont) return;
+    const term = (state.browserSearch || "").toLowerCase();
+    const list = (state.sessionsCache || []).filter((m) => {
+      if (!term) return true;
+      const hay = [m.title, fmtDate(m.created_at)].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(term);
+    });
+    cont.textContent = "";
+    if (!list.length) {
+      const p = document.createElement("div");
+      p.className = "sess-empty";
+      p.textContent = term ? "Không có phiên khớp." : "Chưa có phiên nào.";
+      cont.appendChild(p);
+      return;
+    }
+    for (const meta of list) cont.appendChild(sessionCard(meta));
+  }
+
+  function sessionCard(meta) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "sess-card";
+    const title = document.createElement("div");
+    title.className = "sc-title";
+    title.textContent = meta.title || "Untitled session";
+    const m = document.createElement("div");
+    m.className = "sc-meta";
+    const parts = [fmtDate(meta.created_at), fmtDur(meta.duration_sec)];
+    const spk = meta.speaker_count != null
+      ? meta.speaker_count
+      : (Array.isArray(meta.speakers) ? meta.speakers.length : null);
+    if (spk != null) parts.push(`${spk} người nói`);
+    m.textContent = parts.filter(Boolean).join(" · ");
+    card.append(title, m);
+    card.addEventListener("click", () => openSession(meta.session_id, meta.title));
+    return card;
+  }
+
+  // Reset the transcript surface (used before loading a saved session or a fresh
+  // recording), so old rows never bleed into the new one.
+  function clearTranscript() {
+    el.xTranscript.textContent = "";
+    state.utterances.clear();
+    state.lastSeq = 0;
+    state.currentSummary = null;
+    if (el.summaryArea) el.summaryArea.hidden = true;
+    renderRecent();
+  }
+
+  async function openSession(sid, fallbackTitle) {
+    if (!sid) return;
+    setToolStatus("Đang mở phiên…");
+    let data;
+    try {
+      data = await api(`/api/sessions/${encodeURIComponent(sid)}`);
+    } catch (e) {
+      setToolStatus("");
+      notice("Không mở được phiên: " + (e.message || e), "error");
+      return;
+    }
+    clearTranscript();
+    state.openedSessionId = sid;
+    state.sessionId = sid;               // so summarize / export / rename target it
+    if (el.xTitle) el.xTitle.value = (data && data.title) || fallbackTitle || "";
+    const rows = coerceUtteranceRows(data && (data.utterances || data.records || data));
+    for (const rec of rows) addUtterance(rec);
+    // Show a saved summary if the session already has one.
+    const sum = data && data.summary;
+    const md = sum ? (typeof sum === "string" ? sum : sum.markdown) : "";
+    if (md) {
+      renderSummary({ markdown: md, scenario: sum.scenario, provider: sum.provider, saved: true });
+    }
+    setToolStatus("");
+    setUiMode("transcript");
+  }
+
+  if (el.backSessions) {
+    el.backSessions.addEventListener("click", () => {
+      state.openedSessionId = null;
+      // Only clear when not actively recording (keep a live session intact).
+      if (!state.recording) { clearTranscript(); state.sessionId = null; }
+      setUiMode("browser");
+    });
+  }
+  if (el.browserSearch) {
+    el.browserSearch.addEventListener("input", () => {
+      state.browserSearch = el.browserSearch.value.trim();
+      renderSessionBrowser();
+    });
+  }
+
   /* ============================ CONFIRM DIALOG ============================ */
   let confirmHandler = null;
   function confirmDialog(message, okLabel, onOk) {
@@ -1855,7 +2256,6 @@
     applyTheme();
     updateTranslateButtons();
     refreshOutputDropdowns();
-    syncSummaryProvider();
     refreshToggleEnabled();
     return state.settings;
   }
@@ -1868,10 +2268,14 @@
     try {
       await refreshSettings();
       await loadLanguages();
+      updateTranslateButtons();   // now that languages are in, populate translate popovers
     } catch (e) {
       notice("Couldn't reach the local service. Some features may be unavailable.", "error");
       state.settings = {};
     }
+
+    // 1b) Audio input/output devices for the two toolbar pickers.
+    loadAudioDevices();
 
     // 2) Consent gate.
     if (!state.consentOk) openConsent();

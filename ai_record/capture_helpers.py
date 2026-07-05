@@ -15,7 +15,11 @@ log = logging.getLogger("ai_record.capture_helpers")
 
 
 def build_and_start(
-    state, title: str, mode: str = "meeting", sources: list[str] | None = None
+    state,
+    title: str,
+    mode: str = "meeting",
+    sources: list[str] | None = None,
+    devices: dict[str, str | None] | None = None,
 ) -> tuple[str, dict]:
     from .audio.capture import CaptureManager
     from .pipeline import Pipeline
@@ -72,6 +76,7 @@ def build_and_start(
         on_status=on_status,
         epoch_states=epoch_states,
         enabled_sources=enabled,
+        devices=devices,
     )
     up = capture.start()
     if not up:

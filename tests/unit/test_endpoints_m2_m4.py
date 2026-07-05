@@ -251,8 +251,8 @@ def test_capture_start_passes_mode_and_sources(client, monkeypatch):
     state.settings = state.settings.update({"consent_acknowledged": True})
     calls: dict = {}
 
-    def fake_start(st, title, mode="meeting", sources=None):
-        calls.update(title=title, mode=mode, sources=sources)
+    def fake_start(st, title, mode="meeting", sources=None, devices=None):
+        calls.update(title=title, mode=mode, sources=sources, devices=devices)
         return "sid-1", {"you": True}
 
     monkeypatch.setattr("ai_record.server._start_capture", fake_start)

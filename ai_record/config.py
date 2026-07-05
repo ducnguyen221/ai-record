@@ -41,6 +41,7 @@ SUMMARY_SCENARIOS: tuple[str, ...] = (
     "study_notes",
     "action_tracker",
     "article",
+    "analyze",
 )
 
 DEFAULT_SUMMARY_SCENARIOS: dict[str, str] = {
@@ -70,6 +71,17 @@ DEFAULT_SUMMARY_SCENARIOS: dict[str, str] = {
     "article": (
         "Rewrite the discussion in this transcript into a clean, readable article/blog post in "
         "flowing prose that explains what was covered. Vietnamese-first. Output Markdown."
+    ),
+    "analyze": (
+        "Read and understand the whole transcript, then produce a GENERAL ANALYSIS "
+        "(distinct from a plain summary), Vietnamese-first, in Markdown with these four "
+        "sections: (a) '## Tổng quan' — a short overview of what this is about; "
+        "(b) '## Các điểm/chủ đề chính' — the main points/themes as a bullet list; "
+        "(c) '## Tóm tắt cô đọng' — a condensed summary in a few sentences; and "
+        "(d) '## Câu hỏi phản biện / Gợi ý / Rủi ro cần lưu ý' — 3 to 6 critical/"
+        "challenging questions, suggestions, or risks worth noting. Base EVERYTHING only "
+        "on what the transcript actually says; do NOT invent facts, numbers, or claims "
+        "that are not present in it. Output Markdown."
     ),
 }
 

@@ -71,7 +71,7 @@ class SourceHealth:
 
 
 class AudioBackend(Protocol):
-    def open(self, role: str, settings) -> OpenedFormat: ...
+    def open(self, role: str, settings, device_id: str | None = None) -> OpenedFormat: ...
     def read(self) -> tuple[np.ndarray, int]: ...
     def close(self) -> None: ...
     def current_device_id(self) -> str: ...
@@ -158,17 +158,43 @@ class SoundcardBackend:
         self._fmt: OpenedFormat | None = None
         self._role = ""
 
-    def open(self, role: str, settings) -> OpenedFormat:
+    def open(self, role: str, settings, device_id: str | None = None) -> OpenedFormat:
         import soundcard as sc  # type: ignore
 
         self._role = role
         if role == "them":
-            spk = sc.default_speaker()
-            mic = sc.get_microphone(id=str(spk.name), include_loopback=True)
-            dev_name = spk.name
+            # "them" = the WASAPI loopback of a speaker. soundcard exposes a speaker's
+            # loopback as a microphone carrying the speaker's id. A specific
+            # ``device_id`` pins that speaker; a missing/not-found id falls back to the
+            # system default speaker (SPEC.md §5.1) and logs.
+            mic = None
+            dev_name = ""
+            if device_id:
+                try:
+                    mic = sc.get_microphone(id=str(device_id), include_loopback=True)
+                    dev_name = str(getattr(mic, "name", device_id))
+                except Exception as exc:
+                    log.warning("output device %r not found (%s); using default speaker", device_id, exc)
+                    mic = None
+            if mic is None:
+                spk = sc.default_speaker()
+                mic = sc.get_microphone(id=str(spk.name), include_loopback=True)
+                dev_name = spk.name
         else:
-            mic = sc.default_microphone()
-            dev_name = mic.name
+            # "you" = a specific microphone (no loopback). Missing/not-found id falls
+            # back to the system default microphone.
+            mic = None
+            dev_name = ""
+            if device_id:
+                try:
+                    mic = sc.get_microphone(id=str(device_id), include_loopback=False)
+                    dev_name = str(getattr(mic, "name", device_id))
+                except Exception as exc:
+                    log.warning("input device %r not found (%s); using default mic", device_id, exc)
+                    mic = None
+            if mic is None:
+                mic = sc.default_microphone()
+                dev_name = mic.name
         req_rate = int(getattr(settings, "capture_samplerate", 0) or 48000)
         req_channels = int(getattr(mic, "channels", 0) or (2 if role == "them" else 1))
         block = 1024
@@ -225,9 +251,11 @@ class PyAudioWpatchBackend:
         self._fmt: OpenedFormat | None = None
         self._np_dtype = np.float32
 
-    def open(self, role: str, settings) -> OpenedFormat:
+    def open(self, role: str, settings, device_id: str | None = None) -> OpenedFormat:
         import pyaudiowpatch as pyaudio  # type: ignore
 
+        # Device pinning is a soundcard feature (ids are soundcard-shaped, not PyAudio
+        # indices); this fallback backend always uses the WASAPI default for the role.
         self._pa = pyaudio.PyAudio()
         if role == "them":
             dev = self._pa.get_default_wasapi_loopback()
@@ -306,6 +334,65 @@ def make_backend(settings) -> AudioBackend:
 
 
 # --------------------------------------------------------------------------- #
+# Device enumeration (for the device-picker UI)
+# --------------------------------------------------------------------------- #
+def list_audio_devices() -> dict:
+    """Enumerate selectable input (microphone) + output (speaker) devices.
+
+    Shape::
+
+        {"inputs":  [{"id": str, "name": str, "default": bool}, ...],
+         "outputs": [{"id": str, "name": str, "default": bool}, ...],
+         "available": bool}
+
+    Uses ``soundcard`` (lazy import). Inputs come from ``all_microphones`` (loopback
+    excluded — those are captured via the matching speaker); outputs from
+    ``all_speakers``. ``default`` is set by matching the default mic/speaker id.
+
+    Fully guarded: on ANY import or enumeration failure it returns
+    ``{"inputs": [], "outputs": [], "available": False}`` so callers never crash on a
+    machine without audio hardware or without the ``soundcard`` package installed.
+    Kept as a module-level function so tests can monkeypatch it.
+    """
+    empty = {"inputs": [], "outputs": [], "available": False}
+    try:
+        import soundcard as sc  # type: ignore
+    except Exception:
+        return empty
+    try:
+        try:
+            default_in_id = str(getattr(sc.default_microphone(), "id", ""))
+        except Exception:
+            default_in_id = ""
+        try:
+            default_out_id = str(getattr(sc.default_speaker(), "id", ""))
+        except Exception:
+            default_out_id = ""
+
+        inputs = []
+        for m in sc.all_microphones(include_loopback=False):
+            dev_id = str(getattr(m, "id", getattr(m, "name", "")))
+            inputs.append({
+                "id": dev_id,
+                "name": str(getattr(m, "name", dev_id)),
+                "default": bool(default_in_id) and dev_id == default_in_id,
+            })
+
+        outputs = []
+        for s in sc.all_speakers():
+            dev_id = str(getattr(s, "id", getattr(s, "name", "")))
+            outputs.append({
+                "id": dev_id,
+                "name": str(getattr(s, "name", dev_id)),
+                "default": bool(default_out_id) and dev_id == default_out_id,
+            })
+
+        return {"inputs": inputs, "outputs": outputs, "available": True}
+    except Exception:  # pragma: no cover - defensive; enumeration hiccup
+        return empty
+
+
+# --------------------------------------------------------------------------- #
 # CaptureManager
 # --------------------------------------------------------------------------- #
 StatusCb = Callable[[str, str, str], None]
@@ -322,6 +409,7 @@ class _SourceRunner:
         settings,
         on_status: StatusCb,
         epoch_state: SourceEpoch | None = None,
+        device_id: str | None = None,
     ) -> None:
         self.source = source
         self.ring = ring
@@ -329,6 +417,9 @@ class _SourceRunner:
         self.settings = settings
         self.on_status = on_status
         self.epoch_state = epoch_state if epoch_state is not None else SourceEpoch()
+        # Optional explicit device id (mic for "you", speaker-loopback for "them").
+        # None → use the system default for this source (unchanged default behaviour).
+        self.device_id = device_id
         self.health = SourceHealth()
         self.opened: OpenedFormat | None = None
         self.available = False
@@ -345,7 +436,7 @@ class _SourceRunner:
     def start(self) -> bool:
         try:
             self._backend = make_backend(self.settings)
-            self.opened = self._backend.open(self.source, self.settings)
+            self.opened = self._backend.open(self.source, self.settings, self.device_id)
             self._resampler = _Resampler(self.opened.sample_rate, TARGET_RATE)
             self.available = True
             self._open_epoch(initial=True)
@@ -407,7 +498,15 @@ class _SourceRunner:
             self.cum_samples += pcm.size
 
     def _maybe_poll_device(self) -> None:
-        """Detect a default-device swap between reads and force a reopen (SPEC.md §5.1)."""
+        """Detect a default-device swap between reads and force a reopen (SPEC.md §5.1).
+
+        Skipped when a specific ``device_id`` is pinned: the user chose that exact
+        device, so a default-device swap must NOT drag capture onto another device
+        (and ``current_device_id`` reports the default, which would otherwise look
+        like a perpetual mismatch and trigger a reopen loop).
+        """
+        if self.device_id:
+            return
         now = time.monotonic()
         if now - self._last_device_poll < _DEVICE_POLL_SEC:
             return
@@ -442,7 +541,7 @@ class _SourceRunner:
                 pass
             time.sleep(0.5)
             try:
-                self.opened = self._backend.open(self.source, self.settings)
+                self.opened = self._backend.open(self.source, self.settings, self.device_id)
                 self._resampler = _Resampler(self.opened.sample_rate, TARGET_RATE)
                 self._open_epoch(initial=False)
                 self.on_status(self.source, "reopened", f"attempt {attempt + 1}")
@@ -480,19 +579,23 @@ class CaptureManager:
         on_status: StatusCb | None = None,
         epoch_states: dict[str, SourceEpoch] | None = None,
         enabled_sources: tuple[str, ...] | list[str] | None = None,
+        devices: dict[str, str | None] | None = None,
     ) -> None:
         self.settings = settings
         self.on_status: StatusCb = on_status or (lambda *a: None)
         epoch_states = epoch_states or {}
+        # Optional per-source device pinning: ``{"you": <mic id>, "them": <speaker id>}``.
+        # A missing/None entry means "use the system default for that source".
+        devices = devices or {}
         # Dictation / single-source support (addendum §E1): only build runners for the
         # requested sources so a mic-only or loopback-only session never opens the
         # other device. Default = both.
         want = set(enabled_sources) if enabled_sources else {"them", "you"}
         runners = {
             "them": _SourceRunner("them", ring_them, raw_them, settings, self.on_status,
-                                  epoch_states.get("them")),
+                                  epoch_states.get("them"), device_id=devices.get("them")),
             "you": _SourceRunner("you", ring_you, raw_you, settings, self.on_status,
-                                 epoch_states.get("you")),
+                                 epoch_states.get("you"), device_id=devices.get("you")),
         }
         self._runners = {s: r for s, r in runners.items() if s in want}
 

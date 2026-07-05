@@ -218,6 +218,15 @@ def create_app(state: AppState) -> FastAPI:
     async def preflight() -> dict:
         return run_preflight(state.settings, state.secrets)
 
+    # -- audio devices (for the device-picker UI) ------------------------- #
+    @app.get("/api/audio-devices", dependencies=dep)
+    async def audio_devices() -> dict:
+        """List selectable input/output devices (mockable; safe when the audio lib is
+        absent — returns empty lists + ``available:false``)."""
+        from .audio import capture as _capture
+
+        return _capture.list_audio_devices()
+
     # -- capture lifecycle ------------------------------------------------ #
     @app.post("/api/capture/start", dependencies=dep)
     async def start(body: dict | None = None) -> dict:
@@ -230,13 +239,36 @@ def create_app(state: AppState) -> FastAPI:
         mode = body.get("mode") or "meeting"
         if mode not in ("meeting", "dictation"):
             mode = "meeting"
+
+        devices: dict[str, str | None] | None = None
         sources = body.get("sources")
-        if sources is not None:
+        # Device-selection mode (UI redesign): explicit mic/speaker ids. When either
+        # `input_device` or `output_device` key is present it takes precedence over
+        # `mode`/`sources`. `input_device` → mic source "you"; `output_device` → the
+        # loopback of that speaker, source "them". null/absent → that source OFF.
+        if "input_device" in body or "output_device" in body:
+            input_device = body.get("input_device")
+            output_device = body.get("output_device")
+            if not input_device and not output_device:
+                raise HTTPException(
+                    status_code=422,
+                    detail="at least one of input_device / output_device must be non-null",
+                )
+            sources = []
+            devices = {}
+            if input_device:
+                sources.append("you")
+                devices["you"] = str(input_device)
+            if output_device:
+                sources.append("them")
+                devices["them"] = str(output_device)
+        elif sources is not None:
+            # Back-compat: mode/sources selection unchanged.
             sources = [s for s in sources if s in ("you", "them")]
             if not sources:
                 raise HTTPException(status_code=422, detail="sources must include 'you' and/or 'them'")
         try:
-            session_id, opened = _start_capture(state, title, mode, sources)
+            session_id, opened = _start_capture(state, title, mode, sources, devices)
         except CaptureError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
         return {"session_id": session_id, "sources": opened}
@@ -577,12 +609,16 @@ def _status(state: AppState) -> dict:
 
 
 def _start_capture(
-    state: AppState, title: str, mode: str = "meeting", sources: list[str] | None = None
+    state: AppState,
+    title: str,
+    mode: str = "meeting",
+    sources: list[str] | None = None,
+    devices: dict[str, str | None] | None = None,
 ) -> tuple[str, dict]:
     """Build the pipeline + capture manager and start recording (real hardware path)."""
     from .capture_helpers import build_and_start
 
-    return build_and_start(state, title, mode, sources)
+    return build_and_start(state, title, mode, sources, devices)
 
 
 def _start_rediarize(state: AppState, sid: str) -> None:
