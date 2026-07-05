@@ -10,9 +10,10 @@ is gated 403 on consent. Worker threads bridge to the event loop via
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import secrets as _secrets
-from collections import deque
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import Secrets, Settings, resolve_preset, resolve_sessions_root, SECRET_NAMES
 from .preflight import run_preflight
-from .store import SessionStore
+from .store import InvalidSessionId, SessionStore
 
 log = logging.getLogger("ai_record.server")
 
@@ -39,6 +40,7 @@ class _Client:
         self.ws = ws
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self.lagging = False
+        self.lagging_since: float | None = None
 
 
 class AppState:
@@ -90,19 +92,47 @@ class AppState:
     def _fanout(self, msg: dict) -> None:
         mtype = msg.get("type", "")
         durable = mtype in _DURABLE
+        now = time.monotonic()
+        deadline = self.settings.ws_client_slow_deadline_s
         for client in list(self.clients):
-            try:
-                client.queue.put_nowait(msg)
-            except asyncio.QueueFull:
-                if durable:
+            if durable:
+                try:
+                    client.queue.put_nowait(msg)
+                    client.lagging = False
+                    client.lagging_since = None
+                except asyncio.QueueFull:
+                    # NEVER silently drop a durable event. The utterance is already
+                    # persisted (jsonl keyed by seq); mark the client lagging and, if
+                    # it stays behind past the deadline, close it so it reconnects and
+                    # replays via the since_seq catch-up endpoint (SPEC.md §4.7).
+                    self.ws_drops += 1
                     client.lagging = True
-                    self.ws_drops += 1  # client will replay via since_seq
-                else:
-                    # coalesce: drop the oldest status, keep the newest
+                    if client.lagging_since is None:
+                        client.lagging_since = now
+                    if now - client.lagging_since >= deadline:
+                        self._close_client(client)
+            else:
+                # STATUS (non-durable): coalesce — drop the oldest, keep the newest.
+                try:
+                    client.queue.put_nowait(msg)
+                except asyncio.QueueFull:
                     with _suppress():
                         client.queue.get_nowait()
                     with _suppress():
                         client.queue.put_nowait(msg)
+
+    def _close_client(self, client: "_Client") -> None:
+        """Evict a persistently-lagging client (it will reconnect + replay by seq)."""
+        self.clients.discard(client)
+        if self.loop is None:
+            return
+
+        async def _close() -> None:
+            with contextlib.suppress(Exception):
+                await client.ws.close(code=4402)
+
+        with contextlib.suppress(Exception):
+            self.loop.create_task(_close())
 
 
 class _suppress:
@@ -126,6 +156,11 @@ def create_app(state: AppState) -> FastAPI:
             raise HTTPException(status_code=403, detail="origin not allowed")
 
     dep = [Depends(auth)]
+
+    @app.exception_handler(InvalidSessionId)
+    async def _bad_session_id(request: Request, exc: InvalidSessionId) -> JSONResponse:
+        # A rejected/traversal session_id is indistinguishable from "not found".
+        return JSONResponse(status_code=404, content={"detail": "session not found"})
 
     @app.on_event("startup")
     async def _capture_loop() -> None:

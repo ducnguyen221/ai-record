@@ -27,6 +27,20 @@ _SPEECH = "speech"
 
 
 @dataclass
+class SourceEpoch:
+    """Mutable holder for a source's current epoch/offset (SPEC.md §4.8).
+
+    Shared by reference between the capture runner (which bumps it on a device
+    reopen) and the segmenter (which stamps each emitted utterance from it), so
+    utterances recorded after a device change carry the correct ``source_epoch_id``
+    instead of a stale ``0``.
+    """
+
+    epoch_id: int = 0
+    offset_sec: float = 0.0
+
+
+@dataclass
 class Utterance:
     """A finalized speech chunk with sample-accurate bounds (SPEC.md §5.2)."""
 
@@ -56,12 +70,16 @@ class Segmenter:
         *,
         source_epoch_id: int = 0,
         source_offset_sec: float = 0.0,
+        epoch_state: SourceEpoch | None = None,
     ) -> None:
         self.source = source
         self.settings = settings
         self.vad = vad
         self.source_epoch_id = source_epoch_id
         self.source_offset_sec = source_offset_sec
+        # When present, the live epoch/offset are read from this shared holder at
+        # emit time so a device reopen mid-recording is reflected in utterances.
+        self._epoch_state = epoch_state
 
         self.frame_samples = int(vad.frame_samples)
         frame_ms = self.frame_samples / (SAMPLE_RATE / 1000.0)
@@ -90,8 +108,13 @@ class Segmenter:
         self.vad.reset()
 
     # ------------------------------------------------------------------ #
-    def _seconds(self, sample: int) -> float:
-        return self.source_offset_sec + sample / SAMPLE_RATE
+    def _current_epoch(self) -> tuple[int, float]:
+        if self._epoch_state is not None:
+            return self._epoch_state.epoch_id, self._epoch_state.offset_sec
+        return self.source_epoch_id, self.source_offset_sec
+
+    def _seconds(self, sample: int, offset_sec: float) -> float:
+        return offset_sec + sample / SAMPLE_RATE
 
     def _build(self, frames: list[np.ndarray], starts: list[int], forced: bool) -> Utterance | None:
         if not frames:
@@ -101,15 +124,16 @@ class Segmenter:
         end_sample = starts[-1] + frames[-1].size
         if end_sample - start_sample < self.min_speech_samples:
             return None
+        epoch_id, offset_sec = self._current_epoch()
         return Utterance(
             source=self.source,
             pcm=pcm,
-            start=self._seconds(start_sample),
-            end=self._seconds(end_sample),
+            start=self._seconds(start_sample, offset_sec),
+            end=self._seconds(end_sample, offset_sec),
             audio_start_sample=start_sample,
             audio_end_sample=end_sample,
-            source_epoch_id=self.source_epoch_id,
-            source_offset_sec=self.source_offset_sec,
+            source_epoch_id=epoch_id,
+            source_offset_sec=offset_sec,
             forced_cut=forced,
         )
 

@@ -7,11 +7,12 @@ guard is a pure function (:func:`is_hallucination`) so it can be unit-tested dir
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -28,6 +29,10 @@ _MODEL_LADDER: list[tuple[str, str]] = [
 ]
 
 _PUNCT_ONLY = re.compile(r"^[\s\W_]*$", re.UNICODE)
+
+
+class _CudaOOM(Exception):
+    """Internal marker for a CUDA out-of-memory failure during transcription."""
 
 
 @dataclass
@@ -99,7 +104,14 @@ def is_hallucination(
 class Transcriber:
     """faster-whisper wrapper. Lazy model load; OOM/ladder model downgrade."""
 
-    def __init__(self, settings: Settings, preset: Preset) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        preset: Preset,
+        *,
+        on_status: Callable[[dict], None] | None = None,
+        on_recover: Callable[[Utterance], None] | None = None,
+    ) -> None:
         self.settings = settings
         self.preset = preset
         self._model = None
@@ -107,20 +119,35 @@ class Transcriber:
         self._compute_type = preset.whisper_compute_type
         self._device = preset.whisper_device
         self._beam = preset.beam(settings.latency_mode)
+        # Status broadcaster + offline-recovery sink (SPEC.md §4.4/§5.3). Utterances
+        # that can't be transcribed even after a downgrade are queued here instead of
+        # being silently dropped; the server can later recover them offline.
+        self.on_status = on_status
+        self.on_recover = on_recover
+        self.pending_recovery: list[Utterance] = []
 
     # ------------------------------------------------------------------ #
     def current_model(self) -> tuple[str, str]:
         return self._model_name, self._compute_type
 
-    def load(self) -> None:
-        """Load the model per preset, downgrading on OOM (SPEC.md §5.3)."""
+    def _new_model(self, model_name: str, compute_type: str, device: str) -> Any:
+        """Instantiate a faster-whisper model (single seam; monkeypatched in tests)."""
         from faster_whisper import WhisperModel  # type: ignore
 
+        return WhisperModel(model_name, device=device, compute_type=compute_type)
+
+    def _ensure_model(self) -> None:
+        """Load the current (already-resolved) model if none is live."""
+        if self._model is None:
+            self._model = self._new_model(self._model_name, self._compute_type, self._device)
+
+    def load(self) -> None:
+        """Load the model per preset, downgrading on OOM (SPEC.md §5.3)."""
         attempts = self._downgrade_chain(self._model_name, self._compute_type, self._device)
         last_exc: Exception | None = None
         for model_name, compute_type, device in attempts:
             try:
-                self._model = WhisperModel(model_name, device=device, compute_type=compute_type)
+                self._model = self._new_model(model_name, compute_type, device)
                 self._model_name, self._compute_type, self._device = model_name, compute_type, device
                 log.info("loaded whisper %s (%s, %s)", model_name, compute_type, device)
                 return
@@ -162,9 +189,13 @@ class Transcriber:
 
     # ------------------------------------------------------------------ #
     def apply_ladder_step(self, step: LadderStep) -> None:
-        """Live beam/model swap for the fallback ladder (SPEC.md §4.4)."""
+        """Live beam/compute/model swap for the fallback ladder (SPEC.md §4.4)."""
         if step >= LadderStep.BEAM_1:
             self._beam = 1
+        # Cheaper compute first (fp16 → int8_float16), keeping the model size, before
+        # dropping to a smaller model — a real downgrade for gpu_16gb_plus (float16).
+        if step >= LadderStep.WHISPER_INT8_FLOAT16 and self._compute_type == "float16":
+            self._swap_model(self._model_name, "int8_float16")
         if step >= LadderStep.WHISPER_MEDIUM:
             self._swap_model("medium", "int8_float16")
         if step >= LadderStep.WHISPER_SMALL:
@@ -186,21 +217,28 @@ class Transcriber:
             self.load()
 
         try:
-            segments, info = self._model.transcribe(
-                utt.pcm,
-                language=self.settings.force_language or None,
-                vad_filter=self.settings.whisper_vad_filter,
-                beam_size=self._beam,
-                temperature=[0.0, 0.2, 0.4],
-                condition_on_previous_text=False,
-            )
-            seg_list = list(segments)
-        except Exception as exc:  # includes CUDA OOM
-            if self._is_oom(exc):
-                log.warning("CUDA OOM in transcribe; downgrading model")
-                self._empty_cache()
-                self._downgrade_after_oom()
+            seg_list, info = self._run_model(utt)
+        except _CudaOOM:
+            # First OOM: free VRAM, downgrade one rung, and RETRY the SAME utterance
+            # once on the smaller model rather than dropping it (SPEC.md §5.3).
+            self._empty_cache()
+            downgraded = self._downgrade_after_oom()
+            self._emit_status("degraded", f"cuda_oom→{self._model_name}/{self._compute_type}")
+            if not downgraded:
+                self._queue_for_recovery(utt, "cuda_oom_no_downgrade")
                 return None
+            try:
+                self._ensure_model()
+                seg_list, info = self._run_model(utt)
+            except _CudaOOM:
+                # Still OOM after downgrade: hand off to offline recovery, don't drop.
+                self._empty_cache()
+                self._queue_for_recovery(utt, "cuda_oom_persisted")
+                return None
+            except Exception as exc:
+                log.error("transcribe retry failed: %s", exc)
+                return None
+        except Exception as exc:
             log.error("transcribe failed: %s", exc)
             return None
 
@@ -232,21 +270,57 @@ class Transcriber:
             effective_compute_type=self._compute_type,
         )
 
+    def _run_model(self, utt: Utterance) -> tuple[list, Any]:
+        """Run the loaded model, normalizing a CUDA OOM into :class:`_CudaOOM`."""
+        try:
+            segments, info = self._model.transcribe(
+                utt.pcm,
+                language=self.settings.force_language or None,
+                vad_filter=self.settings.whisper_vad_filter,
+                beam_size=self._beam,
+                temperature=[0.0, 0.2, 0.4],
+                condition_on_previous_text=False,
+            )
+            return list(segments), info
+        except Exception as exc:
+            if self._is_oom(exc):
+                log.warning("CUDA OOM in transcribe (%s/%s)", self._model_name, self._compute_type)
+                raise _CudaOOM(str(exc)) from exc
+            raise
+
+    def _emit_status(self, event: str, detail: str) -> None:
+        if self.on_status is not None:
+            with contextlib.suppress(Exception):
+                self.on_status({"type": "status", "note": f"stt:{event}:{detail}", "recording": True})
+
+    def _queue_for_recovery(self, utt: Utterance, reason: str) -> None:
+        """Mark an utterance for offline recovery instead of dropping it silently."""
+        self.pending_recovery.append(utt)
+        if self.on_recover is not None:
+            with contextlib.suppress(Exception):
+                self.on_recover(utt)
+        self._emit_status("recover_queued", reason)
+        log.warning("utterance queued for offline recovery (%s)", reason)
+
     @staticmethod
     def _is_oom(exc: Exception) -> bool:
         msg = str(exc).lower()
         return "out of memory" in msg or "cuda" in msg and "memory" in msg
 
-    def _downgrade_after_oom(self) -> None:
+    def _downgrade_after_oom(self) -> bool:
+        """Drop one model rung after an OOM. Returns True if anything changed."""
         for i, (m, c) in enumerate(_MODEL_LADDER):
             if m == self._model_name:
                 if i + 1 < len(_MODEL_LADDER):
                     self._swap_model(*_MODEL_LADDER[i + 1])
-                else:
+                    return True
+                if (self._model_name, self._compute_type, self._device) != ("small", "int8", "cpu"):
                     self._model_name, self._compute_type, self._device = "small", "int8", "cpu"
                     self._model = None
-                return
+                    return True
+                return False  # already at the smallest CPU rung
         self._swap_model("small", "int8")
+        return True
 
 
 class MockTranscriber:

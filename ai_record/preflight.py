@@ -39,6 +39,21 @@ def _cuda_report() -> tuple[bool, str | None, float | None]:
         return False, None, None
 
 
+def _whisper_loadable() -> bool:
+    """Real M1-gate probe: can faster-whisper actually be imported here?
+
+    Import-guarded and lightweight (no model download, no CUDA required — CPU
+    inference is valid). Returns ``False`` when the library is unavailable so the
+    preflight gate is meaningful instead of always-true.
+    """
+    try:
+        import faster_whisper  # type: ignore  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
 def _whisper_cache_present() -> bool:
     """Best-effort check for a cached faster-whisper / HF model (no download)."""
     candidates = [
@@ -87,7 +102,7 @@ def run_preflight(settings: Settings, secrets: Secrets | None = None) -> dict[st
         "cuda": cuda,
         "cuda_version": cuda_version,
         "vram_gb": round(vram, 1) if vram is not None else None,
-        "whisper_loadable": cuda or True,  # CPU fallback always possible
+        "whisper_loadable": _whisper_loadable(),
         "model_cache": _whisper_cache_present(),
         "disk_free_gb": disk_free_gb,
         "hf_terms_ok": secrets.is_set("hf_token"),

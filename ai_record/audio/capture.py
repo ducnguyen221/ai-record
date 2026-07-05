@@ -23,12 +23,17 @@ from typing import Callable, Protocol
 
 import numpy as np
 
+from collections import deque
+
 from ..store import RawSegmentWriter
 from .ringbuffer import RingBuffer
+from .segmenter import SourceEpoch
 
 log = logging.getLogger("ai_record.capture")
 
 TARGET_RATE = 16000
+_RMS_WINDOW = 50            # blocks averaged for rolling RMS telemetry
+_DEVICE_POLL_SEC = 2.0      # how often to poll current_device_id() for a swap
 
 
 # --------------------------------------------------------------------------- #
@@ -47,17 +52,17 @@ class OpenedFormat:
 
 @dataclass
 class SourceHealth:
-    rms: float = 0.0
-    silent_frames: int = 0
-    overrun_count: int = 0
-    underrun_count: int = 0
+    rms: float = 0.0                 # rolling-window RMS, not just the last block
+    silent_seconds: float = 0.0      # accumulated silent time in seconds
+    overrun_count: int = 0           # ring-buffer drops (producer outran consumer)
+    underrun_count: int = 0          # backend delivered an empty/short read
     reopen_count: int = 0
     last_epoch_open_wall: str = ""
 
     def to_dict(self) -> dict:
         return {
             "rms": self.rms,
-            "silent_frames": self.silent_frames,
+            "silent_seconds": self.silent_seconds,
             "overrun_count": self.overrun_count,
             "underrun_count": self.underrun_count,
             "reopen_count": self.reopen_count,
@@ -151,10 +156,12 @@ class SoundcardBackend:
         self._rec = None
         self._ctx = None
         self._fmt: OpenedFormat | None = None
+        self._role = ""
 
     def open(self, role: str, settings) -> OpenedFormat:
         import soundcard as sc  # type: ignore
 
+        self._role = role
         if role == "them":
             spk = sc.default_speaker()
             mic = sc.get_microphone(id=str(spk.name), include_loopback=True)
@@ -162,18 +169,22 @@ class SoundcardBackend:
         else:
             mic = sc.default_microphone()
             dev_name = mic.name
-        native_rate = 48000
-        native_channels = 2 if role == "them" else 1
-        self._ctx = mic.recorder(samplerate=native_rate, channels=native_channels, blocksize=1024)
+        req_rate = int(getattr(settings, "capture_samplerate", 0) or 48000)
+        req_channels = int(getattr(mic, "channels", 0) or (2 if role == "them" else 1))
+        block = 1024
+        self._ctx = mic.recorder(samplerate=req_rate, channels=req_channels, blocksize=block)
         self._rec = self._ctx.__enter__()
+        # Report the format the backend actually opened, not a hard-coded guess.
+        opened_rate = int(getattr(self._rec, "samplerate", req_rate) or req_rate)
+        opened_channels = int(getattr(self._rec, "channels", req_channels) or req_channels)
         self._fmt = OpenedFormat(
-            sample_rate=native_rate,
-            channels=native_channels,
+            sample_rate=opened_rate,
+            channels=opened_channels,
             sample_format="float32",
             device_id=str(getattr(mic, "id", dev_name)),
             device_name=str(dev_name),
-            block_frames=1024,
-            block_duration_ms=1024 / native_rate * 1000,
+            block_frames=block,
+            block_duration_ms=block / opened_rate * 1000,
         )
         return self._fmt
 
@@ -191,7 +202,18 @@ class SoundcardBackend:
             self._rec = None
 
     def current_device_id(self) -> str:
-        return self._fmt.device_id if self._fmt else ""
+        """Re-query the CURRENT default device id so callers can detect a swap.
+
+        Guarded so it never raises without hardware; falls back to the last opened
+        id if the live query fails.
+        """
+        try:
+            import soundcard as sc  # type: ignore
+
+            dev = sc.default_speaker() if self._role == "them" else sc.default_microphone()
+            return str(getattr(dev, "id", getattr(dev, "name", "")))
+        except Exception:
+            return self._fmt.device_id if self._fmt else ""
 
 
 class PyAudioWpatchBackend:
@@ -292,12 +314,21 @@ StatusCb = Callable[[str, str, str], None]
 class _SourceRunner:
     """Runs one source's capture loop in its own thread (SPEC.md §4.6)."""
 
-    def __init__(self, source: str, ring: RingBuffer, raw: RawSegmentWriter | None, settings, on_status: StatusCb) -> None:
+    def __init__(
+        self,
+        source: str,
+        ring: RingBuffer,
+        raw: RawSegmentWriter | None,
+        settings,
+        on_status: StatusCb,
+        epoch_state: SourceEpoch | None = None,
+    ) -> None:
         self.source = source
         self.ring = ring
         self.raw = raw
         self.settings = settings
         self.on_status = on_status
+        self.epoch_state = epoch_state if epoch_state is not None else SourceEpoch()
         self.health = SourceHealth()
         self.opened: OpenedFormat | None = None
         self.available = False
@@ -308,6 +339,8 @@ class _SourceRunner:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._silent_since: float | None = None
+        self._rms_window: deque[float] = deque(maxlen=_RMS_WINDOW)
+        self._last_device_poll = 0.0
 
     def start(self) -> bool:
         try:
@@ -331,6 +364,11 @@ class _SourceRunner:
         self.health.reopen_count = self.epoch
         wall = datetime.now(timezone.utc).astimezone().isoformat()
         self.health.last_epoch_open_wall = wall
+        # Propagate the new epoch to the segmenter via the shared holder so
+        # utterances emitted after a reopen carry the correct source_epoch_id.
+        # Cumulative sample counts stay continuous across epochs, so timestamps
+        # remain absolute and offset_sec stays 0 (no double-counting).
+        self.epoch_state.epoch_id = self.epoch
         if self.raw is not None:
             self.raw.mark_epoch(self.epoch, wall, self.cum_samples)
 
@@ -339,27 +377,51 @@ class _SourceRunner:
         eps = self.settings.silence_rms_eps
         warn_s = self.settings.silent_loopback_warn_s
         while not self._stop.is_set():
+            self._maybe_poll_device()
             try:
-                raw, _frames = self._backend.read()
+                raw, frames = self._backend.read()
             except Exception as exc:
                 self._handle_device_change(exc)
+                continue
+            if frames == 0 or raw.size == 0:
+                self.health.underrun_count += 1
                 continue
             mono = _to_mono(raw, self.opened.channels if self.opened else 1)
             pcm = self._resampler.process(mono)
             if pcm.size == 0:
                 continue
-            rms = float(np.sqrt(np.mean(np.square(pcm, dtype=np.float64))))
-            self.health.rms = rms
-            if rms < eps:
-                self.health.silent_frames += pcm.size
+            block_rms = float(np.sqrt(np.mean(np.square(pcm, dtype=np.float64))))
+            self._rms_window.append(block_rms)
+            self.health.rms = float(sum(self._rms_window) / len(self._rms_window))
+            if block_rms < eps:
+                self.health.silent_seconds += pcm.size / TARGET_RATE
                 if self.source == "them":
                     self._maybe_warn_silent(warn_s)
             else:
                 self._silent_since = None
             if self.raw is not None:
                 self.raw.write(pcm, self.cum_samples, self.epoch)
-            self.ring.write(pcm)
+            dropped = self.ring.write(pcm)
+            if dropped:
+                self.health.overrun_count += 1
             self.cum_samples += pcm.size
+
+    def _maybe_poll_device(self) -> None:
+        """Detect a default-device swap between reads and force a reopen (SPEC.md §5.1)."""
+        now = time.monotonic()
+        if now - self._last_device_poll < _DEVICE_POLL_SEC:
+            return
+        self._last_device_poll = now
+        if self._backend is None or self.opened is None:
+            return
+        try:
+            current = self._backend.current_device_id()
+        except Exception:  # hardware call must never crash the loop
+            return
+        if current and current != self.opened.device_id:
+            log.info("capture %s default device changed %s → %s",
+                     self.source, self.opened.device_id, current)
+            self._handle_device_change(RuntimeError("default device changed"))
 
     def _maybe_warn_silent(self, warn_s: float) -> None:
         now = time.monotonic()
@@ -398,6 +460,11 @@ class _SourceRunner:
         if self._backend is not None:
             with _suppress():
                 self._backend.close()
+        # Ownership: close the raw writer here so the final open segment gets a
+        # valid WAV header before finalize() globs + concatenates all segments.
+        if self.raw is not None:
+            with _suppress():
+                self.raw.close()
 
 
 class CaptureManager:
@@ -411,12 +478,16 @@ class CaptureManager:
         raw_them: RawSegmentWriter | None,
         settings,
         on_status: StatusCb | None = None,
+        epoch_states: dict[str, SourceEpoch] | None = None,
     ) -> None:
         self.settings = settings
         self.on_status: StatusCb = on_status or (lambda *a: None)
+        epoch_states = epoch_states or {}
         self._runners = {
-            "them": _SourceRunner("them", ring_them, raw_them, settings, self.on_status),
-            "you": _SourceRunner("you", ring_you, raw_you, settings, self.on_status),
+            "them": _SourceRunner("them", ring_them, raw_them, settings, self.on_status,
+                                  epoch_states.get("them")),
+            "you": _SourceRunner("you", ring_you, raw_you, settings, self.on_status,
+                                 epoch_states.get("you")),
         }
 
     def start(self) -> list[CaptureSource]:

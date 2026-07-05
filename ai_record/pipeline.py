@@ -22,7 +22,7 @@ import numpy as np
 
 from .config import LadderStep, Preset, Settings
 from .audio.ringbuffer import RingBuffer
-from .audio.segmenter import Segmenter, Utterance
+from .audio.segmenter import Segmenter, SourceEpoch, Utterance
 from .audio.vad import Vad, make_vad
 from .store import SessionStore, UtteranceRecord, _now_iso
 from .transcriber import TranscriberProtocol
@@ -48,6 +48,24 @@ class _TimedQueue(queue.Queue):
             if self.queue:
                 return time.monotonic() - self.queue[0][0]
             return 0.0
+
+
+class _GatedQueue:
+    """Wraps the STT queue so a segmenter's ``put`` is suppressed in audio-only mode.
+
+    In ladder step 8 (AUDIO_ONLY, SPEC.md §4.4) live STT is turned off: segmenters
+    keep running (raw WAV capture / recovery still work), but their utterances are
+    NOT enqueued for live transcription — the audio is recovered offline instead.
+    """
+
+    def __init__(self, inner: "_TimedQueue", suppressed: Callable[[], bool]) -> None:
+        self._inner = inner
+        self._suppressed = suppressed
+
+    def put(self, item, *a, **k) -> None:
+        if self._suppressed():
+            return
+        self._inner.put(item, *a, **k)
 
 
 class LadderController:
@@ -103,6 +121,7 @@ class Pipeline:
         sources: tuple[str, ...] = SOURCES,
         vad_factory: Callable[[], Vad] | None = None,
         ring_seconds: float = 30.0,
+        epoch_states: dict[str, SourceEpoch] | None = None,
     ) -> None:
         self.settings = settings
         self.preset = preset
@@ -115,11 +134,16 @@ class Pipeline:
 
         cap = int(ring_seconds * settings.target_sample_rate)
         self.rings: dict[str, RingBuffer] = {s: RingBuffer(cap) for s in sources}
+        # Shared epoch holders so a device reopen mid-recording reaches the segmenter.
+        self.epoch_states: dict[str, SourceEpoch] = epoch_states or {s: SourceEpoch() for s in sources}
         vad_factory = vad_factory or (lambda: make_vad(settings))
         self.segmenters: dict[str, Segmenter] = {
-            s: Segmenter(s, settings, vad_factory()) for s in sources
+            s: Segmenter(s, settings, vad_factory(), epoch_state=self.epoch_states.get(s))
+            for s in sources
         }
 
+        # Set while the ladder is at AUDIO_ONLY: segmenters stop feeding live STT.
+        self._audio_only = threading.Event()
         self.stt_queue: _TimedQueue = _TimedQueue(maxsize=64)
         self._stop = threading.Event()
         self._eof: dict[str, threading.Event] = {s: threading.Event() for s in sources}
@@ -131,9 +155,10 @@ class Pipeline:
     # ------------------------------------------------------------------ #
     def start(self) -> None:
         for s in self.sources:
+            gated = _GatedQueue(self.stt_queue, self._audio_only.is_set)
             t = threading.Thread(
                 target=self.segmenters[s].run,
-                args=(self.rings[s], self.stt_queue, self._stop, self._eof[s]),
+                args=(self.rings[s], gated, self._stop, self._eof[s]),
                 name=f"segmenter-{s}",
                 daemon=True,
             )
@@ -181,6 +206,7 @@ class Pipeline:
                 utt = self.stt_queue.get(timeout=0.1)
             except queue.Empty:
                 self.ladder.evaluate(0, 0.0)
+                self._sync_audio_only()
                 if all(self._eof[s].is_set() for s in self.sources) and self.stt_queue.empty():
                     # drain complete; keep looping until stopped (server owns lifecycle)
                     time.sleep(0.02)
@@ -188,12 +214,21 @@ class Pipeline:
             backlog = self.stt_queue.qsize()
             oldest = self.stt_queue.oldest_age()
             self.ladder.evaluate(backlog, oldest)
+            self._sync_audio_only()
             try:
                 self._process(utt)
             except Exception as exc:  # never let one utterance kill the worker
                 log.exception("STT worker error: %s", exc)
             finally:
                 self.stt_queue.task_done()
+
+    def _sync_audio_only(self) -> None:
+        """Mirror the ladder's AUDIO_ONLY rung into the segmenter feed gate."""
+        if self.ladder.step >= LadderStep.AUDIO_ONLY:
+            if not self._audio_only.is_set():
+                self._audio_only.set()
+        elif self._audio_only.is_set():
+            self._audio_only.clear()
 
     def _process(self, utt: Utterance) -> None:
         tr = self.transcriber.transcribe(utt)

@@ -3,8 +3,10 @@ import json
 import wave
 
 import numpy as np
+import pytest
 
 from ai_record.store import (
+    InvalidSessionId,
     RawSegmentWriter,
     SessionStore,
     UtteranceRecord,
@@ -131,20 +133,75 @@ def test_raw_segment_writer_valid_wav_and_concat(store: SessionStore):
     sess = store.create("m")
     rw = RawSegmentWriter(sess.dir, "them", seconds=1)
     rw.mark_epoch(0, _now_iso(), 0)
-    pcm = tone(2.5)  # spans multiple 1-second segments
+    pcm = tone(3.5)  # spans FOUR 1-second segments (000..003)
     rw.write(pcm, 0, 0)
     canonical = rw.close_and_concat()
-    # canonical has a valid header and correct-ish length
+    # canonical has a valid header
     with contextlib.closing(wave.open(canonical, "rb")) as wf:
         assert wf.getframerate() == 16000
         assert wf.getnchannels() == 1
-        assert wf.getnframes() > 0
+        assert wf.getnframes() == pcm.size  # EXACT sample count, no tolerance
     back = read_wav_mono16k(canonical)
-    assert abs(back.size - pcm.size) <= 16000  # within a segment of the source
+    assert back.size == pcm.size
+    # four per-minute (here per-second) segment files were produced
+    segs = sorted((store._dir(sess.session_id)).glob("audio_them.[0-9][0-9][0-9].wav"))
+    assert len(segs) == 4
     # samples.idx sidecar recorded epoch + segments
     lines = (store._dir(sess.session_id) / "samples.idx").read_text(encoding="utf-8").splitlines()
     kinds = [json.loads(x)["kind"] for x in lines]
     assert "epoch" in kinds and "segment" in kinds
+
+
+def test_finalize_concats_all_segments_exact(store: SessionStore):
+    """SessionStore.finalize() must concat EVERY segment, not just 000 (Critical #2)."""
+    sess = store.create("m")
+    sid = sess.session_id
+    # Two independent writers whose segments must both be fully recovered.
+    for source in ("you", "them"):
+        rw = RawSegmentWriter(store._dir(sid), source, seconds=1)
+        rw.mark_epoch(0, _now_iso(), 0)
+        rw.write(tone(3.5, freq=200 if source == "you" else 300), 0, 0)
+        rw.close()  # ownership: capture stop closes; finalize concatenates
+    store.finalize(sid)
+    for source in ("you", "them"):
+        canonical = store._dir(sid) / f"audio_{source}.wav"
+        assert canonical.exists()
+        with contextlib.closing(wave.open(str(canonical), "rb")) as wf:
+            assert wf.getnframes() == int(3.5 * 16000)  # exact total across 4 segments
+
+
+def test_session_id_traversal_rejected(store: SessionStore):
+    """Traversal / absolute ids are rejected before any fs access (Critical #1)."""
+    bad_ids = ["..\\docs", "../../x", "..%5Cdocs", "/etc/passwd", "C:\\Windows",
+               "20260101-000000-../../escape", "not-a-session", ""]
+    for bad in bad_ids:
+        with pytest.raises(InvalidSessionId):
+            store._dir(bad)
+        with pytest.raises(InvalidSessionId):
+            store.load_session(bad)
+        with pytest.raises(InvalidSessionId):
+            store.delete_session(bad)
+        with pytest.raises(InvalidSessionId):
+            store.delete_audio_only(bad)
+
+
+def test_session_id_traversal_cannot_escape_root(tmp_path):
+    """A backslash-traversal id must not read or delete a sibling of the root."""
+    root = tmp_path / "sessions"
+    outside = tmp_path / "docs"
+    outside.mkdir(parents=True)
+    (outside / "secret.txt").write_text("classified", encoding="utf-8")
+    store = SessionStore(root)
+    with pytest.raises(InvalidSessionId):
+        store.delete_session("..\\docs")
+    # The sibling directory and its file survive untouched.
+    assert (outside / "secret.txt").read_text(encoding="utf-8") == "classified"
+
+
+def test_valid_generated_session_id_accepted(store: SessionStore):
+    sess = store.create("Weekly Sync!!")  # slug is sanitised to [a-z0-9-]
+    # round-trips cleanly through the validator
+    assert store._dir(sess.session_id).exists()
 
 
 def test_detect_incomplete_and_retention(store: SessionStore):

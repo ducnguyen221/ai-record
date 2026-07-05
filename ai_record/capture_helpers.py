@@ -25,13 +25,20 @@ def build_and_start(state, title: str) -> tuple[str, dict]:
     preset = resolve_preset(settings)
     session = state.store.create(title)
 
-    transcriber = Transcriber(settings, preset)
-    pipeline = Pipeline(settings, preset, transcriber, state.store, session, broadcast=state.submit)
+    from .audio.segmenter import SourceEpoch
+
+    epoch_states = {"you": SourceEpoch(), "them": SourceEpoch()}
+
+    transcriber = Transcriber(settings, preset, on_status=state.submit)
+    pipeline = Pipeline(
+        settings, preset, transcriber, state.store, session,
+        broadcast=state.submit, epoch_states=epoch_states,
+    )
 
     raw_you = raw_them = None
     if settings.persist_audio:
-        raw_you = RawSegmentWriter(session.dir, "you", settings.raw_segment_seconds)
-        raw_them = RawSegmentWriter(session.dir, "them", settings.raw_segment_seconds)
+        raw_you = RawSegmentWriter(session.dir, "you", settings.raw_segment_seconds, settings)
+        raw_them = RawSegmentWriter(session.dir, "them", settings.raw_segment_seconds, settings)
 
     def on_status(source: str, event: str, detail: str) -> None:
         state.submit({"type": "status", "note": f"{source}:{event}:{detail}", "recording": True})
@@ -43,6 +50,7 @@ def build_and_start(state, title: str) -> tuple[str, dict]:
         raw_them=raw_them,
         settings=settings,
         on_status=on_status,
+        epoch_states=epoch_states,
     )
     up = capture.start()
     if not up:
