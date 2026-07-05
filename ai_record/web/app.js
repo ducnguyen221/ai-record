@@ -32,8 +32,11 @@
     everConnected: false,
     languages: [],
     rediarizeTimer: null,
-    currentSummary: null,
     modelCatalog: null,      // {default, models, current, installed, ollama_available}
+    // --- three-view switcher (Transcript | Summary | Analyze) ---
+    tab: "transcript",       // 'transcript' | 'summary' | 'analyze'
+    summaryResult: null,     // cached summarize payload (scenario reformat)
+    analyzeResult: null,     // cached summarize payload (scenario analyze)
     // --- new: expanded-view content mode + saved-session browsing ---
     uiMode: "browser",       // 'browser' | 'transcript'
     openedSessionId: null,   // a saved session opened for viewing (vs. the live one)
@@ -46,15 +49,9 @@
 
   const MAX_ROWS = 500;      // cap DOM nodes for very long transcripts
   const UNKNOWN_SPEAKER = "Speaker ?";
-  // Summary/analyze use fixed scenarios; provider comes from settings.
-  const SCENARIO_LABELS = {
-    reformat: "Tóm tắt",
-    analyze: "Phân tích",
-    minutes: "Meeting minutes",
-    study_notes: "Study notes",
-    action_tracker: "Action tracker",
-    article: "Article",
-  };
+  // The Summary/Analyze tabs each map to a fixed summarize scenario; provider comes
+  // from settings. reformat = verbatim grouping, analyze = general analysis + critique.
+  const TAB_SCENARIO = { summary: "reformat", analyze: "analyze" };
   const SUMMARY_PROVIDERS = [
     { value: "claude_cli", label: "Claude CLI" },
     { value: "codex_cli", label: "Codex CLI" },
@@ -83,17 +80,12 @@
     // browser mode
     browserSearch: $("browser-search"), sessionBrowser: $("session-browser"),
     backSessions: $("back-sessions"),
-    // transcript-mode actions
-    sumReformat: $("sum-reformat"), sumAnalyze: $("sum-analyze"),
+    // transcript-mode actions + three-view tabs
+    transcriptPanel: $("transcript-panel"),
+    tabTranscript: $("tab-transcript"), tabSummary: $("tab-summary"), tabAnalyze: $("tab-analyze"),
     copyTranscript: $("copy-transcript"),
-    dlTranscriptMd: $("dl-transcript-md"), dlTranscriptTxt: $("dl-transcript-txt"),
-    dlSummaryMd: $("dl-summary-md"), dlSummaryTxt: $("dl-summary-txt"),
-    dlCombinedMd: $("dl-combined-md"), rediarizeRun: $("rediarize-run"),
     openFolder: $("open-folder"),
-    toolStatus: $("tool-status"), summaryArea: $("summary-area"),
-    summaryMeta: $("summary-meta"), summaryFallback: $("summary-fallback"),
-    summaryOutput: $("summary-output"),
-    summarySave: $("summary-save"), summaryCopy: $("summary-copy"),
+    toolStatus: $("tool-status"),
     // overlays
     consent: $("consent"), consentAgree: $("consent-agree"),
     preflight: $("preflight"), pfRows: $("pf-rows"), pfPreset: $("pf-preset"),
@@ -122,37 +114,6 @@
     if (res.status === 204) return null;
     const ct = res.headers.get("content-type") || "";
     return ct.includes("application/json") ? res.json() : res.text();
-  }
-
-  async function downloadAttachment(path, fallbackName) {
-    const res = await fetch(path, { headers: { [HEADER]: TOKEN || "" } });
-    if (!res.ok) {
-      const err = new Error(`GET ${path} -> ${res.status}`);
-      err.status = res.status;
-      try { err.data = await res.json(); } catch (_) { /* ignore */ }
-      throw err;
-    }
-    const blob = await res.blob();
-    const filename = filenameFromDisposition(res.headers.get("content-disposition")) || fallbackName;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  function filenameFromDisposition(disposition) {
-    if (!disposition) return "";
-    const utf = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-    if (utf) {
-      try { return decodeURIComponent(utf[1].trim().replace(/^"|"$/g, "")); }
-      catch (_) { return utf[1].trim().replace(/^"|"$/g, ""); }
-    }
-    const plain = disposition.match(/filename="?([^";]+)"?/i);
-    return plain ? plain[1].trim() : "";
   }
 
   /* ============================ NOTICES ============================ */
@@ -192,8 +153,28 @@
       const hasTranscript = state.recording || state.openedSessionId || state.utterances.size > 0;
       setUiMode(hasTranscript ? "transcript" : "browser");
     } else {
-      requestResize(560, 200);
+      requestResize(560, 250);
     }
+  }
+
+  /* ============================ LOGO → WEBSITE ============================ */
+  // The logo (compact + expanded) opens the product site externally. Prefer the
+  // pywebview bridge; fall back to a normal new-tab open when not hosted.
+  const PRODUCT_URL = "https://ducnguyen.vn/ai-record/";
+  function openWebsite() {
+    try {
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.open_external === "function") {
+        window.pywebview.api.open_external(PRODUCT_URL);
+        return;
+      }
+    } catch (_) { /* fall through to browser open */ }
+    try { window.open(PRODUCT_URL, "_blank"); } catch (_) { /* popup blocked */ }
+  }
+  for (const logo of document.querySelectorAll(".app-logo")) {
+    logo.addEventListener("click", openWebsite);
+    logo.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWebsite(); }
+    });
   }
 
   // Swap the area under the expanded header between the saved-session browser
@@ -201,8 +182,10 @@
   function setUiMode(mode) {
     state.uiMode = mode === "transcript" ? "transcript" : "browser";
     if (el.expanded) el.expanded.dataset.mode = state.uiMode;
-    if (state.uiMode === "browser") loadSessionBrowser();
-    else scrollToLatest();
+    if (state.uiMode === "browser") { loadSessionBrowser(); return; }
+    updateTabAvail();
+    if (el.transcriptPanel) el.transcriptPanel.dataset.tab = state.tab;
+    if (state.tab === "transcript") scrollToLatest();
   }
 
   /* ============================ TIME / TEXT UTILS ============================ */
@@ -1169,69 +1152,158 @@
     copyDropdown = { btn, pop };
   }
 
-  async function copySummary() {
-    const md = state.currentSummary && state.currentSummary.markdown;
-    if (!md) { setToolStatus("Chưa có tóm tắt để copy.", "warn"); return; }
+  /* ============================ THREE-VIEW TABS ============================ */
+  // Tabs: Transcript (live, always mounted) | Summary (reformat) | Analyze (analyze).
+  // Summary/Analyze fetch once against activeSessionId(), cache the payload in
+  // state.summaryResult / state.analyzeResult, and offer refresh + save + copy.
+  function resultEls(kind) {
+    return {
+      tab: kind === "summary" ? el.tabSummary : el.tabAnalyze,
+      meta: $(`${kind}-meta`),
+      fallback: $(`${kind}-fallback`),
+      output: $(`${kind}-output`),
+      save: $(`${kind}-save`),
+      copy: $(`${kind}-copy`),
+      refresh: $(`${kind}-refresh`),
+    };
+  }
+  function getCache(kind) { return kind === "summary" ? state.summaryResult : state.analyzeResult; }
+  function setCache(kind, v) { if (kind === "summary") state.summaryResult = v; else state.analyzeResult = v; }
+
+  function updateTabAvail() {
+    const has = !!activeSessionId();
+    for (const btn of [el.tabSummary, el.tabAnalyze]) {
+      if (!btn) continue;
+      btn.disabled = !has;
+      btn.title = has ? "" : "Bắt đầu ghi hoặc mở một phiên để dùng.";
+    }
+    // If a result tab is active but the session went away, fall back to transcript.
+    if (!has && state.tab !== "transcript") setTab("transcript");
+  }
+
+  function setTab(tab) {
+    if (!["transcript", "summary", "analyze"].includes(tab)) tab = "transcript";
+    if (tab !== "transcript" && !activeSessionId()) return;  // disabled tab
+    state.tab = tab;
+    for (const [name, btn] of [
+      ["transcript", el.tabTranscript], ["summary", el.tabSummary], ["analyze", el.tabAnalyze],
+    ]) {
+      if (btn) btn.setAttribute("aria-selected", name === tab ? "true" : "false");
+    }
+    if (el.transcriptPanel) el.transcriptPanel.dataset.tab = tab;
+    if (tab === "transcript") { scrollToLatest(); return; }
+    // Result tab: show the cache, or run it the first time it is opened.
+    const cache = getCache(tab);
+    if (cache) renderResult(tab, cache);
+    else runResult(tab);
+  }
+
+  function renderLoading(kind) {
+    const r = resultEls(kind);
+    if (r.meta) r.meta.textContent = "";
+    if (r.fallback) r.fallback.hidden = true;
+    if (r.save) r.save.hidden = true;
+    if (r.copy) r.copy.hidden = true;
+    if (r.output) {
+      r.output.classList.add("result-loading");
+      r.output.textContent = kind === "analyze" ? "Đang phân tích…" : "Đang tóm tắt…";
+    }
+  }
+
+  function renderResult(kind, payload) {
+    const r = resultEls(kind);
+    if (!r.output) return;
+    r.output.classList.remove("result-loading");
+    if (payload && payload.error && !payload.markdown) {
+      if (r.meta) r.meta.textContent = "Không xử lý được";
+      if (r.fallback) r.fallback.hidden = true;
+      if (r.save) r.save.hidden = true;
+      if (r.copy) r.copy.hidden = true;
+      renderMarkdown("**Lỗi:** " + String(payload.error), r.output);
+      return;
+    }
+    const markdown = payload && payload.markdown ? String(payload.markdown) : "";
+    const provider = payload && payload.provider ? providerLabel(payload.provider) : "";
+    if (r.meta) r.meta.textContent = [provider, payload && payload.saved ? "đã lưu" : ""].filter(Boolean).join(" · ");
+    if (r.fallback) r.fallback.hidden = !(payload && payload.reformat_fallback);
+    if (r.save) {
+      r.save.hidden = !markdown;
+      r.save.disabled = false;
+      r.save.textContent = payload && payload.saved ? "Đã lưu" : "Lưu";
+    }
+    if (r.copy) r.copy.hidden = !markdown;
+    renderMarkdown(markdown || "_Không có nội dung._", r.output);
+  }
+
+  // Run the summarize scenario for a tab. Cache the payload so switching tabs never
+  // re-runs; the "Chạy lại" button forces a re-run.
+  async function runResult(kind) {
+    const sid = activeSessionId();
+    if (!sid) { notice("Bắt đầu hoặc chọn một phiên trước.", "warn"); return; }
+    const provider = (state.settings && (state.settings.summarizer_provider || state.settings.summary_provider)) || "claude_cli";
+    const scenario = TAB_SCENARIO[kind];
+    const r = resultEls(kind);
+    if (r.refresh) r.refresh.disabled = true;
+    renderLoading(kind);
+    try {
+      const payload = await api(`/api/sessions/${encodeURIComponent(sid)}/summarize`, {
+        method: "POST",
+        body: { scenario, provider },
+      });
+      setCache(kind, payload || {});
+      renderResult(kind, payload || {});
+    } catch (e) {
+      const errText = (e.data && e.data.error) || e.message || String(e);
+      renderResult(kind, { error: errText });
+      notice("Không xử lý được phiên: " + errText, "error");
+    } finally {
+      if (r.refresh) r.refresh.disabled = false;
+    }
+  }
+
+  // Persist the cached result on explicit user approval.
+  async function saveResult(kind) {
+    const sid = activeSessionId();
+    const cur = getCache(kind);
+    const r = resultEls(kind);
+    if (!sid) { notice("Bắt đầu hoặc chọn một phiên trước khi lưu.", "warn"); return; }
+    if (!cur || !cur.markdown) { notice("Chạy trước khi lưu.", "warn"); return; }
+    if (r.save) r.save.disabled = true;
+    setToolStatus("Đang lưu...");
+    try {
+      await api(`/api/sessions/${encodeURIComponent(sid)}/summary/save`, {
+        method: "POST",
+        body: { markdown: cur.markdown, scenario: cur.scenario || TAB_SCENARIO[kind], provider: cur.provider },
+      });
+      cur.saved = true;
+      if (r.save) r.save.textContent = "Đã lưu";
+      if (r.meta) r.meta.textContent = [cur.provider ? providerLabel(cur.provider) : "", "đã lưu"].filter(Boolean).join(" · ");
+      setToolStatus("Đã lưu.");
+    } catch (e) {
+      if (r.save) r.save.disabled = false;
+      setToolStatus("Không lưu được.", "error");
+      notice("Không lưu được: " + (e.message || e), "error");
+    }
+  }
+
+  async function copyResult(kind) {
+    const cur = getCache(kind);
+    const md = cur && cur.markdown;
+    if (!md) { setToolStatus("Chưa có nội dung để copy.", "warn"); return; }
     const ok = await copyText(String(md));
     setToolStatus(ok ? "Đã copy" : "Không copy được.", ok ? "info" : "error");
   }
 
-  function renderSummary(payload) {
-    // Error branch: a failed/unavailable summarize (non-ok response) shows the reason
-    // in the summary panel instead of a blank "Summary ready" (review I2).
-    if (payload && payload.error && !payload.markdown) {
-      state.currentSummary = null;
-      el.summaryArea.hidden = false;
-      el.summaryFallback.hidden = true;
-      el.summaryMeta.textContent = "Summary unavailable";
-      if (el.summarySave) el.summarySave.hidden = true;
-      if (el.summaryCopy) el.summaryCopy.hidden = true;
-      renderMarkdown("**Summary failed:** " + String(payload.error), el.summaryOutput);
-      return;
+  // Clear both result panels' DOM (used when the transcript surface is reset).
+  function resetResultPanels() {
+    for (const kind of ["summary", "analyze"]) {
+      const r = resultEls(kind);
+      if (r.output) { r.output.textContent = ""; r.output.classList.remove("result-loading"); }
+      if (r.meta) r.meta.textContent = "";
+      if (r.fallback) r.fallback.hidden = true;
+      if (r.save) r.save.hidden = true;
+      if (r.copy) r.copy.hidden = true;
     }
-    const markdown = payload && payload.markdown ? String(payload.markdown) : "";
-    state.currentSummary = payload || null;
-    el.summaryArea.hidden = !markdown;
-    el.summaryFallback.hidden = !(payload && payload.reformat_fallback);
-    const scenario = payload && payload.scenario ? scenarioLabel(payload.scenario) : "Summary";
-    const provider = payload && payload.provider ? providerLabel(payload.provider) : "";
-    el.summaryMeta.textContent = [scenario, provider].filter(Boolean).join(" · ");
-    // A preview exists → offer to persist (Feature 3) + copy (Feature 4). `saved`
-    // marks an already-persisted summary (from a save round-trip or WS "done").
-    if (el.summarySave) {
-      el.summarySave.hidden = !markdown;
-      el.summarySave.disabled = false;
-      el.summarySave.textContent = payload && payload.saved ? "Đã lưu" : "Lưu tóm tắt";
-    }
-    if (el.summaryCopy) el.summaryCopy.hidden = !markdown;
-    renderMarkdown(markdown, el.summaryOutput);
-  }
-
-  /* Persist the previewed summary only on explicit user approval (Feature 3). */
-  async function saveSummary() {
-    const sid = activeSessionId();
-    const cur = state.currentSummary;
-    if (!sid) { notice("Start or select a session before saving.", "warn"); return; }
-    if (!cur || !cur.markdown) { notice("Run a summary before saving.", "warn"); return; }
-    el.summarySave.disabled = true;
-    setToolStatus("Đang lưu tóm tắt...");
-    try {
-      await api(`/api/sessions/${encodeURIComponent(sid)}/summary/save`, {
-        method: "POST",
-        body: { markdown: cur.markdown, scenario: cur.scenario, provider: cur.provider },
-      });
-      cur.saved = true;
-      el.summarySave.textContent = "Đã lưu";
-      setToolStatus("Đã lưu tóm tắt.");
-    } catch (e) {
-      el.summarySave.disabled = false;
-      setToolStatus("Không lưu được tóm tắt.", "error");
-      notice("Couldn't save summary: " + (e.message || e), "error");
-    }
-  }
-
-  function scenarioLabel(value) {
-    return SCENARIO_LABELS[value] || value;
   }
 
   function providerLabel(value) {
@@ -1312,48 +1384,10 @@
     flushParagraph();
   }
 
-  // Summary (reformat, verbatim grouping) and Analyze (general analysis + critique)
-  // are the same endpoint with a fixed scenario. The provider comes from settings.
-  async function runSummarize(scenario, btn) {
-    const sid = activeSessionId();
-    if (!sid) { notice("Bắt đầu hoặc chọn một phiên trước khi tóm tắt.", "warn"); return; }
-    const provider = (state.settings && (state.settings.summarizer_provider || state.settings.summary_provider)) || "claude_cli";
-    if (btn) btn.disabled = true;
-    setToolStatus(scenario === "analyze" ? "Đang phân tích..." : "Đang tóm tắt...");
-    try {
-      const payload = await api(`/api/sessions/${encodeURIComponent(sid)}/summarize`, {
-        method: "POST",
-        body: { scenario, provider },
-      });
-      renderSummary(payload);
-      setToolStatus(payload && payload.reformat_fallback
-        ? "Đã định dạng, giữ nguyên câu chữ."
-        : (scenario === "analyze" ? "Phân tích xong." : "Tóm tắt xong."));
-    } catch (e) {
-      // Surface the backend reason (503 unavailable / 502 provider error) in the panel.
-      const errText = (e.data && e.data.error) || e.message || String(e);
-      renderSummary({ error: errText });
-      setToolStatus(scenario === "analyze" ? "Phân tích thất bại." : "Tóm tắt thất bại.", "error");
-      notice("Không xử lý được phiên: " + errText, "error");
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  }
-
-  async function downloadExport(what, fmt) {
-    const sid = activeSessionId();
-    if (!sid) { notice("Start or select a session before downloading.", "warn"); return; }
-    const q = new URLSearchParams({ what, fmt });
-    const fallback = `${sid}-${what}.${fmt}`;
-    setToolStatus(`Preparing ${what} ${fmt.toUpperCase()} download...`);
-    try {
-      await downloadAttachment(`/api/sessions/${encodeURIComponent(sid)}/export?${q}`, fallback);
-      setToolStatus("Download started.");
-    } catch (e) {
-      setToolStatus("Download failed.", "error");
-      notice("Couldn't download export: " + (e.message || e), "error");
-    }
-  }
+  /* ============================ RE-DIARIZE (in Settings drawer) ============================ */
+  // The "Tách người nói (chính xác)" action lives in the Settings drawer and is
+  // rebuilt each time the drawer opens, so we track its current button element here.
+  let rediarizeBtn = null;
 
   function renderRediarizeProgress(st) {
     const raw = st && st.progress;
@@ -1373,19 +1407,19 @@
       if (done) {
         clearInterval(state.rediarizeTimer);
         state.rediarizeTimer = null;
-        el.rediarizeRun.disabled = false;
+        if (rediarizeBtn) rediarizeBtn.disabled = false;
         setToolStatus("Re-diarize complete. Refreshing speaker labels.");
         await refreshTranscriptFromServer();
       } else if (failed) {
         clearInterval(state.rediarizeTimer);
         state.rediarizeTimer = null;
-        el.rediarizeRun.disabled = false;
+        if (rediarizeBtn) rediarizeBtn.disabled = false;
         setToolStatus("Re-diarize failed.", "error");
       }
     } catch (e) {
       clearInterval(state.rediarizeTimer);
       state.rediarizeTimer = null;
-      el.rediarizeRun.disabled = false;
+      if (rediarizeBtn) rediarizeBtn.disabled = false;
       setToolStatus("Could not read re-diarize status.", "error");
     }
   }
@@ -1393,7 +1427,7 @@
   async function runRediarize() {
     const sid = activeSessionId();
     if (!sid) { notice("Start or select a session before re-diarizing.", "warn"); return; }
-    el.rediarizeRun.disabled = true;
+    if (rediarizeBtn) rediarizeBtn.disabled = true;
     clearInterval(state.rediarizeTimer);
     setToolStatus("Starting accurate re-diarize...");
     try {
@@ -1403,7 +1437,7 @@
     } catch (e) {
       setToolStatus("Re-diarize could not start.", "error");
       notice("Couldn't start re-diarize: " + (e.message || e), "error");
-      el.rediarizeRun.disabled = false;
+      if (rediarizeBtn) rediarizeBtn.disabled = false;
     }
   }
 
@@ -1427,17 +1461,17 @@
     }
   }
 
-  if (el.sumReformat) el.sumReformat.addEventListener("click", () => runSummarize("reformat", el.sumReformat));
-  if (el.sumAnalyze) el.sumAnalyze.addEventListener("click", () => runSummarize("analyze", el.sumAnalyze));
-  if (el.summarySave) el.summarySave.addEventListener("click", saveSummary);
-  if (el.summaryCopy) el.summaryCopy.addEventListener("click", copySummary);
+  // Tab switcher + per-tab controls (refresh / save / copy).
+  if (el.tabTranscript) el.tabTranscript.addEventListener("click", () => setTab("transcript"));
+  if (el.tabSummary) el.tabSummary.addEventListener("click", () => setTab("summary"));
+  if (el.tabAnalyze) el.tabAnalyze.addEventListener("click", () => setTab("analyze"));
+  for (const kind of ["summary", "analyze"]) {
+    const r = resultEls(kind);
+    if (r.refresh) r.refresh.addEventListener("click", () => runResult(kind));
+    if (r.save) r.save.addEventListener("click", () => saveResult(kind));
+    if (r.copy) r.copy.addEventListener("click", () => copyResult(kind));
+  }
   registerCopyDropdown();
-  el.dlTranscriptMd.addEventListener("click", () => downloadExport("transcript", "md"));
-  el.dlTranscriptTxt.addEventListener("click", () => downloadExport("transcript", "txt"));
-  el.dlSummaryMd.addEventListener("click", () => downloadExport("summary", "md"));
-  el.dlSummaryTxt.addEventListener("click", () => downloadExport("summary", "txt"));
-  el.dlCombinedMd.addEventListener("click", () => downloadExport("combined", "md"));
-  el.rediarizeRun.addEventListener("click", runRediarize);
   el.openFolder.addEventListener("click", openFolder);
   if (el.cFolder) el.cFolder.addEventListener("click", openFolder);
 
@@ -1820,6 +1854,20 @@
       s.diarization_enabled, (v) => putSetting({ diarization_enabled: v })));
     gSp.appendChild(rowToggle("Real-time labels", "label speakers live (needs GPU)",
       s.diarization_realtime, (v) => putSetting({ diarization_realtime: v })));
+    // Accurate offline re-diarization for the open/recording session (moved here
+    // from the transcript action row to keep that row clean).
+    const rdRow = mkRow("Tách người nói (chính xác)", "chạy lại diarization offline cho phiên đang mở");
+    const rdBtn = document.createElement("button");
+    rdBtn.type = "button";
+    rdBtn.id = "rediarize-run";
+    rdBtn.className = "btn subtle";
+    rdBtn.textContent = "Tách người nói";
+    rdBtn.disabled = !activeSessionId();
+    if (!activeSessionId()) rdBtn.title = "Mở một phiên hoặc đang ghi để dùng.";
+    rdBtn.addEventListener("click", runRediarize);
+    rdRow.querySelector(".ctl").appendChild(rdBtn);
+    gSp.appendChild(rdRow);
+    rediarizeBtn = rdBtn;
     el.setBody.appendChild(gSp);
 
     /* --- Storage --- */
@@ -2161,8 +2209,15 @@
     el.xTranscript.textContent = "";
     state.utterances.clear();
     state.lastSeq = 0;
-    state.currentSummary = null;
-    if (el.summaryArea) el.summaryArea.hidden = true;
+    // Reset the two result tabs + return to the live transcript view.
+    state.summaryResult = null;
+    state.analyzeResult = null;
+    resetResultPanels();
+    state.tab = "transcript";
+    if (el.transcriptPanel) el.transcriptPanel.dataset.tab = "transcript";
+    if (el.tabTranscript) el.tabTranscript.setAttribute("aria-selected", "true");
+    if (el.tabSummary) el.tabSummary.setAttribute("aria-selected", "false");
+    if (el.tabAnalyze) el.tabAnalyze.setAttribute("aria-selected", "false");
     renderRecent();
   }
 
@@ -2183,11 +2238,18 @@
     if (el.xTitle) el.xTitle.value = (data && data.title) || fallbackTitle || "";
     const rows = coerceUtteranceRows(data && (data.utterances || data.records || data));
     for (const rec of rows) addUtterance(rec);
-    // Show a saved summary if the session already has one.
+    // Pre-fill the matching result tab if the session already has a saved summary.
     const sum = data && data.summary;
     const md = sum ? (typeof sum === "string" ? sum : sum.markdown) : "";
     if (md) {
-      renderSummary({ markdown: md, scenario: sum.scenario, provider: sum.provider, saved: true });
+      const scenario = (sum && typeof sum === "object" && sum.scenario) || "reformat";
+      const kind = scenario === "analyze" ? "analyze" : "summary";
+      setCache(kind, {
+        markdown: md,
+        scenario,
+        provider: sum && typeof sum === "object" ? sum.provider : undefined,
+        saved: true,
+      });
     }
     setToolStatus("");
     setUiMode("transcript");
@@ -2309,23 +2371,28 @@
       case "rename":
         applySpeakerRename(msg.old, msg.new);
         break;
-      case "summary":
-        // Backend now emits {type:"summary", state:"done", markdown} only AFTER an
-        // explicit save (Feature 3) → mark it saved. Preserve the current preview's
-        // scenario/provider labels when this is the client that just saved.
+      case "summary": {
+        // Backend emits {type:"summary", state:"done", markdown} after a save or the
+        // auto-summary at finalize. Route by scenario (analyze → Analyze tab, else
+        // Summary tab), cache it, and render if that tab is currently showing.
+        const kind = msg.scenario === "analyze" ? "analyze" : "summary";
         if (msg.state === "done" && msg.markdown) {
-          const cur = state.currentSummary || {};
-          renderSummary({
+          const prev = getCache(kind) || {};
+          const payload = {
             markdown: msg.markdown,
-            scenario: cur.scenario,
-            provider: cur.provider,
-            reformat_fallback: cur.reformat_fallback,
+            scenario: msg.scenario || prev.scenario || TAB_SCENARIO[kind],
+            provider: msg.provider || prev.provider,
+            reformat_fallback: prev.reformat_fallback,
             saved: true,
-          });
+          };
+          setCache(kind, payload);
+          if (state.tab === kind) renderResult(kind, payload);
         } else if (msg.state === "error" && msg.error) {
-          renderSummary({ error: msg.error });
+          setCache(kind, { error: msg.error });
+          if (state.tab === kind) renderResult(kind, { error: msg.error });
         }
         break;
+      }
       case "rediarize":
         // Backend emits {type:"rediarize", state, detail} — drive progress and, on
         // completion, refresh the transcript to pick up the new speaker labels.

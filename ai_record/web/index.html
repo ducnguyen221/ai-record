@@ -22,7 +22,8 @@
   <section id="compact" class="compact" aria-label="Recorder">
     <!-- All controls on ONE top row -->
     <div class="compact-toolbar">
-      <img class="app-logo" src="/static/logo.png" alt="AI Record" draggable="false">
+      <img class="app-logo" src="/static/logo.png" alt="AI Record" draggable="false"
+           title="Mở website AI Record" role="button" tabindex="0">
       <button id="c-toggle" class="rec-btn small" type="button" disabled>Start</button>
 
       <div class="device-group">
@@ -118,7 +119,8 @@
   <!-- ONE toolbar; the area under the header swaps between browser + transcript modes. -->
   <section id="expanded" class="expanded" aria-label="Session" data-mode="browser" hidden>
     <header class="ex-header">
-      <img class="app-logo" src="/static/logo.png" alt="AI Record" draggable="false">
+      <img class="app-logo" src="/static/logo.png" alt="AI Record" draggable="false"
+           title="Mở website AI Record" role="button" tabindex="0">
 
       <button id="x-toggle" class="rec-btn small" type="button" disabled>Start</button>
 
@@ -225,9 +227,20 @@
     </section>
 
     <!-- ---------- MODE B: a transcript is showing (recording or opened) ---------- -->
-    <section class="transcript-panel" aria-label="Transcript">
+    <!-- data-tab picks which of the three stacked panels (transcript/summary/analyze)
+         is visible; the transcript panel stays mounted + live underneath the others. -->
+    <section id="transcript-panel" class="transcript-panel" aria-label="Transcript" data-tab="transcript">
       <div class="action-row">
         <button id="back-sessions" class="btn" type="button">← Phiên đã lưu</button>
+
+        <div class="view-tabs" role="tablist" aria-label="Chế độ xem">
+          <button id="tab-transcript" class="view-tab" type="button" role="tab"
+                  aria-selected="true">Transcript</button>
+          <button id="tab-summary" class="view-tab" type="button" role="tab"
+                  aria-selected="false" disabled>Summary</button>
+          <button id="tab-analyze" class="view-tab" type="button" role="tab"
+                  aria-selected="false" disabled>Analyze</button>
+        </div>
 
         <div class="copy-dd">
           <button id="copy-transcript" class="btn" type="button" aria-haspopup="true" aria-expanded="false">
@@ -241,17 +254,6 @@
         </div>
 
         <button id="open-folder" class="btn" type="button">📁 Mở thư mục lưu</button>
-        <button id="sum-reformat" class="btn primary" type="button">Summary</button>
-        <button id="sum-analyze" class="btn" type="button">Analyze</button>
-
-        <div class="tool-divider" aria-hidden="true"></div>
-
-        <button id="dl-transcript-md" class="btn subtle" type="button">Transcript .md</button>
-        <button id="dl-transcript-txt" class="btn subtle" type="button">.txt</button>
-        <button id="dl-summary-md" class="btn subtle" type="button">Summary .md</button>
-        <button id="dl-summary-txt" class="btn subtle" type="button">.txt</button>
-        <button id="dl-combined-md" class="btn subtle" type="button">Combined .md</button>
-        <button id="rediarize-run" class="btn subtle" type="button">Re-diarize</button>
 
         <div class="spacer"></div>
 
@@ -263,21 +265,41 @@
 
       <div id="tool-status" class="tool-status" aria-live="polite"></div>
 
-      <div id="summary-area" class="summary-area" hidden>
-        <div class="summary-head">
-          <span id="summary-meta">Summary</span>
-          <span id="summary-fallback" class="fallback-note" hidden>formatted deterministically to preserve exact wording</span>
-          <div class="spacer"></div>
-          <button id="summary-save" class="btn primary" type="button" hidden>Lưu tóm tắt</button>
-          <button id="summary-copy" class="btn" type="button" hidden>Copy</button>
-        </div>
-        <div id="summary-output" class="summary-output"></div>
-      </div>
+      <div class="tab-content">
+        <!-- Transcript: always mounted + live (new utterances append even when hidden). -->
+        <main class="transcript-wrap" id="panel-transcript">
+          <div id="x-transcript" class="transcript" tabindex="0" aria-label="Transcript"></div>
+          <button id="x-jump" class="jump-pill" type="button" hidden>Jump to latest ↓</button>
+        </main>
 
-      <main class="transcript-wrap">
-        <div id="x-transcript" class="transcript" tabindex="0" aria-label="Transcript"></div>
-        <button id="x-jump" class="jump-pill" type="button" hidden>Jump to latest ↓</button>
-      </main>
+        <!-- Summary: reformat scenario. Cached in state.summaryResult. -->
+        <div id="panel-summary" class="result-panel" role="tabpanel" aria-label="Tóm tắt">
+          <div class="result-head">
+            <span class="result-title">Tóm tắt</span>
+            <span id="summary-meta" class="result-meta"></span>
+            <span id="summary-fallback" class="fallback-note" hidden>đã định dạng, giữ nguyên câu chữ</span>
+            <div class="spacer"></div>
+            <button id="summary-refresh" class="btn subtle" type="button">Chạy lại</button>
+            <button id="summary-copy" class="btn" type="button" hidden>Copy</button>
+            <button id="summary-save" class="btn primary" type="button" hidden>Lưu</button>
+          </div>
+          <div id="summary-output" class="result-body"></div>
+        </div>
+
+        <!-- Analyze: analyze scenario. Cached in state.analyzeResult. -->
+        <div id="panel-analyze" class="result-panel" role="tabpanel" aria-label="Phân tích">
+          <div class="result-head">
+            <span class="result-title">Phân tích</span>
+            <span id="analyze-meta" class="result-meta"></span>
+            <span id="analyze-fallback" class="fallback-note" hidden>đã định dạng, giữ nguyên câu chữ</span>
+            <div class="spacer"></div>
+            <button id="analyze-refresh" class="btn subtle" type="button">Chạy lại</button>
+            <button id="analyze-copy" class="btn" type="button" hidden>Copy</button>
+            <button id="analyze-save" class="btn primary" type="button" hidden>Lưu</button>
+          </div>
+          <div id="analyze-output" class="result-body"></div>
+        </div>
+      </div>
     </section>
   </section>
 
