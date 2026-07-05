@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Models / caches
+models/
+*.pt
+*.onnx
+*.ckpt
+
+# Meeting data (privacy — must never be committed; default lives in %LOCALAPPDATA%)
+sessions/
+*.wav
+*.jsonl.pre-rediarize
+
+# Secrets (defense in depth; real secrets live in Windows Credential Manager via keyring)
+.env
+.env.*
+settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
