@@ -345,7 +345,16 @@ class OfflineDiarizer:
                 pipeline.to(torch.device("cuda"))
         except Exception:
             pass
-        annotation = pipeline(wav_path)
+        # Feed audio in-memory (waveform dict) instead of a file path so pyannote does
+        # not need torchcodec/FFmpeg for decoding (avoids libtorchcodec DLL errors on
+        # Windows). audio_them.wav is 16 kHz mono PCM.
+        import numpy as _np  # noqa: F401
+        import soundfile as _sf  # type: ignore
+        import torch as _torch  # type: ignore
+
+        data, sr = _sf.read(wav_path, dtype="float32", always_2d=True)  # (time, channels)
+        waveform = _torch.from_numpy(data.T.copy())  # (channels, time)
+        annotation = pipeline({"waveform": waveform, "sample_rate": int(sr)})
         spans: list[SpeakerSpan] = []
         for segment, _track, speaker in annotation.itertracks(yield_label=True):
             spans.append(
