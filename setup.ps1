@@ -21,9 +21,14 @@ Write-Host "Installing CUDA torch (cu124)..." -ForegroundColor Yellow
 Write-Host "Installing app requirements..." -ForegroundColor Yellow
 & $vpy -m pip install -r requirements.txt
 
-# 4) M2-M4 extras (translation + diarization)
-Write-Host "Installing M2-M4 extras (transformers / resemblyzer / pyannote)..." -ForegroundColor Yellow
-& $vpy -m pip install transformers sentencepiece ctranslate2 resemblyzer "pyannote.audio>=3.1"
+# 4) M2-M4 extras (translation + diarization).
+# resemblyzer depends on the C-extension 'webrtcvad'; we instead ship prebuilt
+# 'webrtcvad-wheels' (in requirements.txt) and install resemblyzer with --no-deps,
+# so no Microsoft C++ Build Tools are required.
+Write-Host "Installing M2-M4 extras (transformers / pyannote / librosa)..." -ForegroundColor Yellow
+& $vpy -m pip install transformers sentencepiece ctranslate2 "pyannote.audio>=3.1" librosa
+Write-Host "Installing resemblyzer (no-deps; uses webrtcvad-wheels)..." -ForegroundColor Yellow
+& $vpy -m pip install --no-deps resemblyzer
 
 # 5) verify
 Write-Host "Verifying torch CUDA..." -ForegroundColor Yellow
