@@ -128,4 +128,55 @@ ai_record/
   web/            vanilla HTML/CSS/JS UI (no build, no CDN)
 tests/            unit + integration (CPU-only)
 docs/SPEC.md      the authoritative specification (v2.0)
+docs/guide.html   standalone HTML guide (intro + usage + how-it-works + this section)
+```
+
+## Models, resource cost, privacy & risks
+
+A friendly, self-contained version of this section (with diagrams) lives in **`docs/guide.html`** — open it in a browser.
+
+### Models in use (reference machine: RTX 4070 12 GB)
+| Role | Model | Runs on | Disk | RAM / VRAM |
+|---|---|---|---|---|
+| Speech→text (STT) | faster-whisper **large-v3** (int8_float16) | **GPU** | ~1.5 GB | ~2–3 GB VRAM |
+| Voice activity (VAD) | Silero VAD | CPU | few MB | negligible |
+| Translation | NLLB-200 **distilled-600M** (int8) | **CPU** | ~1.2 GB | ~1–2 GB RAM |
+| Realtime diarization | Resemblyzer | CPU | ~15 MB | light |
+| Accurate diarization | pyannote 3.1 (HF token) | GPU (on demand) | ~100 MB | post-meeting |
+| Summarization | Claude CLI *(default)* / Codex / Gemini / Ollama | ☁️ / local | — | see below |
+
+First-run model download ≈ 4–6 GB. During a meeting: ~2–3 GB VRAM (Whisper) + moderate CPU (NLLB/embeddings/VAD); near-zero while silent (VAD-gated). Audio WAV is written during capture (~2 MB/min/source) and **deleted on finalize unless you keep it** (Settings → Lưu kết quả).
+
+### Cost — local vs cloud
+**Capture · STT · translation · diarization are 100% LOCAL and FREE; audio never leaves the machine.** The only exception is the on-demand **Summarize** button:
+
+- **Claude CLI (default)** / Codex CLI — sends the transcript **text** (never audio) to Anthropic/OpenAI, using your existing Code subscription (quota, not per-call cash).
+- **Gemini** — text to Google, needs an API key (may cost).
+- **Ollama** — 100% local, free, offline (not installed by default).
+
+Skip summarize, or use Ollama, and the app is fully local.
+
+### Risks
+- ⚖️ **Legal/consent (biggest):** recording others without consent may be illegal (two-party-consent laws). There is no platform "recording" indicator (a consequence of loopback capture) — you must disclose/obtain consent where the law requires it.
+- 🔓 **Data at rest is plaintext** under `%LOCALAPPDATA%\ai-record\sessions\` — anyone with machine access can read it. Use delete / retention.
+- ☁️ **Cloud summarize** sends transcript text out; transcript is treated as untrusted (prompt-injection hardened) but still leaves the machine.
+- 🔑 Secrets (HF token, Gemini key) are stored in **Windows Credential Manager** (keyring), not plaintext. Local server is `127.0.0.1`-only, token + Origin gated. No kernel drivers, admin, or telemetry.
+
+### Local summarizer model — comparison & recommendation
+**Ollama is a runtime, not a model.** Model quality is what matters. For Vietnamese transcripts mixed with Japanese/English on a 12 GB GPU:
+
+| Model | VRAM (Q4) | VN/Japanese | Speed (4070) | Notes |
+|---|---|---|---|---|
+| **Qwen2.5-7B-Instruct** ⭐ | ~5 GB | best | fast (~40–60 tok/s) | **recommended — best balance** |
+| Qwen2.5-14B-Instruct | ~9 GB | excellent | medium | top quality, run post-meeting |
+| SeaLLMs-v3-7B / Vistral-7B | ~5 GB | Vietnamese-tuned | fast | if almost only Vietnamese |
+| Llama 3.1/3.3-8B | ~5 GB | ok (weaker VN) | fast | popular, but Qwen wins for VN |
+| Gemma 2-9B | ~6 GB | ok | medium | solid |
+| Phi-4-14B | ~9 GB | weak VN | medium | strong reasoning, English-centric |
+
+**Recommendation:** `Qwen2.5-7B-Instruct` — best multilingual for VN+Japanese, ~5 GB VRAM (fits alongside Whisper), fast, 100% local/free. Cloud (Claude/Gemini) is a bit smoother but sends text out. Enable local:
+
+```
+ollama pull qwen2.5:7b
+# then in AI Record → Settings: Summarizer provider = Ollama, model = qwen2.5:7b
 ```

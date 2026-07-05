@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Record — Giới thiệu, Hướng dẫn & Cơ chế</title>
+<style>
+  :root{
+    --bg:#ffffff; --surface:#f6f7f9; --surface2:#eef0f3; --border:#e2e5ea;
+    --text:#1a1c1f; --muted:#5b616b; --faint:#8a909a;
+    --accent:#2f6df6; --accent-weak:#e8f0fe; --ok:#1a9d5a; --warn:#c9820a; --danger:#d0433b;
+    --radius:12px; --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+    --font:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#131417;--surface:#1b1d21;--surface2:#23262b;--border:#2c3037;
+      --text:#e9ebee;--muted:#a7adb7;--faint:#767c86;--accent:#5b8cff;--accent-weak:#1b2740;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;font-size:15.5px}
+  .wrap{max-width:880px;margin:0 auto;padding:0 20px 80px}
+  header.hero{display:flex;align-items:center;gap:18px;padding:34px 0 22px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+  header.hero img{width:64px;height:64px;border-radius:14px;flex:none}
+  .hero h1{margin:0;font-size:30px;letter-spacing:-.5px}
+  .hero .tag{color:var(--muted);margin-top:2px}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .badge{font-size:12.5px;font-weight:600;padding:4px 10px;border-radius:20px;background:var(--surface2);color:var(--muted)}
+  .badge.ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok)}
+  .badge.warn{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
+  nav.toc{margin:22px 0 6px;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)}
+  nav.toc b{display:block;font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--faint);margin-bottom:6px}
+  nav.toc a{display:inline-block;margin:3px 14px 3px 0;color:var(--accent);text-decoration:none;font-weight:500}
+  nav.toc a:hover{text-decoration:underline}
+  h2{margin:38px 0 12px;font-size:22px;letter-spacing:-.3px;scroll-margin-top:16px}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:8px}
+  h3{margin:22px 0 8px;font-size:16.5px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  code{font-family:var(--mono);background:var(--surface2);padding:1.5px 6px;border-radius:6px;font-size:.9em}
+  pre{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;overflow:auto}
+  pre code{background:none;padding:0}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;display:block;overflow-x:auto}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--surface2);font-weight:650}
+  .flow{display:flex;flex-direction:column;gap:8px;margin:14px 0}
+  .step{display:flex;gap:12px;align-items:flex-start;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px}
+  .step .k{font-family:var(--mono);font-size:12px;color:var(--accent);background:var(--accent-weak);border-radius:6px;padding:2px 8px;flex:none;margin-top:2px}
+  .note{border-left:3px solid var(--accent);background:var(--accent-weak);padding:10px 14px;border-radius:8px;margin:12px 0}
+  .warn-box{border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent);padding:10px 14px;border-radius:8px;margin:12px 0}
+  .danger-box{border-left:3px solid var(--danger);background:color-mix(in srgb,var(--danger) 9%,transparent);padding:10px 14px;border-radius:8px;margin:12px 0}
+  .rec{font-weight:700;color:var(--ok)}
+  footer{margin-top:50px;padding-top:18px;border-top:1px solid var(--border);color:var(--faint);font-size:13px}
+  .pill{display:inline-block;font-size:12px;font-family:var(--mono);background:var(--surface2);padding:2px 8px;border-radius:6px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <img src="data:image/png;base64,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" alt="AI Record logo">
+    <div>
+      <h1>AI Record</h1>
+      <div class="tag">Ghi chú cuộc họp &amp; đọc-chép giọng nói — chạy cục bộ trên máy bạn.</div>
+      <div class="badges">
+        <span class="badge ok">100% Local (nghe · chữ · dịch · tách người)</span>
+        <span class="badge">RTX 4070 · Windows</span>
+        <span class="badge warn">Chỉ Tóm tắt cloud là tuỳ chọn</span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="toc">
+    <b>Mục lục</b>
+    <a href="#gioithieu">1. Giới thiệu</a>
+    <a href="#caidat">2. Cài đặt &amp; Khởi chạy</a>
+    <a href="#huongdan">3. Hướng dẫn sử dụng</a>
+    <a href="#cochte">4. Cơ chế hoạt động</a>
+    <a href="#models">5. Model &amp; độ nặng</a>
+    <a href="#chiphi">6. Chi phí: Local vs Cloud</a>
+    <a href="#ruiro">7. Rủi ro &amp; an toàn</a>
+    <a href="#sosanh">8. So sánh model tóm tắt local</a>
+    <a href="#luutru">9. Nơi lưu dữ liệu</a>
+  </nav>
+
+  <h2 id="gioithieu"><span class="n">1</span>Giới thiệu</h2>
+  <p><b>AI Record</b> là ứng dụng desktop cục bộ: khi bạn họp online (Teams/Zoom/Meet…) <em>hoặc</em> chỉ muốn tự nói,
+  nó thu âm thanh của máy, chuyển thành văn bản <b>thời gian thực</b>, dịch câu tiếng nước ngoài sang tiếng Việt,
+  tách người nói, và (khi bạn muốn) tóm tắt lại bằng AI.</p>
+  <ul>
+    <li><b>Hai chế độ:</b> <em>Meeting</em> (thu cả loa + mic) và <em>Dictation</em> (chỉ mic — đọc-chép ý tưởng dài).</li>
+    <li><b>Riêng tư:</b> âm thanh <b>không bao giờ rời khỏi máy</b>. Transcribe/dịch/tách người = local hoàn toàn.</li>
+    <li><b>Đầu ra:</b> mặc định chỉ lưu bản <code>.md</code> dễ đọc; tuỳ chọn kèm <code>.mp3</code> hoặc <code>.txt</code>.</li>
+  </ul>
+
+  <h2 id="caidat"><span class="n">2</span>Cài đặt &amp; Khởi chạy</h2>
+  <h3>Cài một lần</h3>
+  <pre><code>powershell -ExecutionPolicy Bypass -File "C:\Users\DucNguyen\Code\ai-record\setup.ps1"</code></pre>
+  <p>Script tạo môi trường <code>.venv</code> + cài torch CUDA + toàn bộ thư viện. Lần đầu tải ~4–6&nbsp;GB model.</p>
+  <h3>Mỗi lần dùng</h3>
+  <ul>
+    <li>Double-click nút <b>“AI Record”</b> trên Desktop (chạy im lặng, không cửa sổ terminal), hoặc</li>
+    <li>Chạy <code>run.ps1</code> (bản có console để xem log khi cần).</li>
+  </ul>
+  <p>Đóng cửa sổ hoặc bấm <b>✕ Thoát</b> = dừng sạch, phiên đang ghi được lưu lại.</p>
+
+  <h2 id="huongdan"><span class="n">3</span>Hướng dẫn sử dụng</h2>
+  <div class="grid">
+    <div class="card"><b>Thanh nhỏ (compact)</b><br>Hàng nút phía trên: Start · chọn nguồn · Dịch · 📁 mở thư mục · ⤢ phóng to.
+      Phía dưới: 3 dòng transcript gần nhất, full chiều ngang.</div>
+    <div class="card"><b>Chọn nguồn khi Start</b><br><em>Both</em> (họp) · <em>Mic only</em> (đọc-chép) · <em>System only</em> (chỉ tiếng loa).</div>
+    <div class="card"><b>Dịch</b><br>Bật nút <b>Dịch</b> → câu tiếng nước ngoài hiện thêm bản tiếng Việt ngay dưới. Chọn ngôn ngữ nguồn trong Settings.</div>
+    <div class="card"><b>Tách người nói</b><br>Mic = “You”; phía loa tự gán “Speaker 1/2…”, sửa tên được. Nút <b>Re-diarize</b> chạy chính xác hơn sau họp (cần HF token).</div>
+    <div class="card"><b>Tóm tắt AI (xem trước rồi mới lưu)</b><br>Phóng to → chọn kịch bản (Reformat/Minutes/Study/Action/Article) → <b>Run</b> → nội dung hiện lên → ưng thì <b>Lưu tóm tắt</b>.</div>
+    <div class="card"><b>Copy &amp; Export</b><br>Nút 📋 Copy chép toàn bộ ra clipboard; nút tải <code>.md</code>/<code>.txt</code>/combined về máy.</div>
+  </div>
+  <div class="note"><b>Reformat</b> = gom nhóm + định dạng đẹp nhưng <b>giữ nguyên từng chữ</b> (có kiểm tra tự động, sai thì tự dùng bản định dạng máy để không đổi nội dung). <b>Minutes</b> = tóm tắt kiểu biên bản họp.</div>
+
+  <h2 id="cochte"><span class="n">4</span>Cơ chế hoạt động</h2>
+  <p>Một tiến trình Python chạy pipeline sản-xuất-tiêu-thụ; STT được ưu tiên tuyệt đối, phần dịch/tách người chạy sau và “vá” vào câu đã hiện.</p>
+  <div class="flow">
+    <div class="step"><span class="k">1 · Thu</span><div><b>WASAPI loopback</b> (tiếng loa = người khác) + <b>micro</b> (bạn) → chuyển 16&nbsp;kHz mono. Không dùng API ghi của Teams/Zoom nên nền tảng không hiện “đang ghi”.</div></div>
+    <div class="step"><span class="k">2 · VAD</span><div><b>Silero VAD</b> cắt luồng thành từng câu theo khoảng lặng, bỏ im lặng.</div></div>
+    <div class="step"><span class="k">3 · STT</span><div><b>faster-whisper large-v3</b> (GPU) chuyển mỗi câu thành chữ + tự nhận ngôn ngữ. Hiện lên UI &amp; lưu <b>ngay</b>.</div></div>
+    <div class="step"><span class="k">4 · Vá</span><div>Chạy nền, ưu tiên thấp: <b>NLLB</b> dịch (nếu bật) + <b>Resemblyzer</b> gán người nói → gửi “patch” cập nhật câu đã hiện.</div></div>
+    <div class="step"><span class="k">5 · Lưu</span><div>Ghi <code>transcript.jsonl</code> + <code>transcript.md</code> + WAV (chống mất khi treo máy), autosave từng câu.</div></div>
+    <div class="step"><span class="k">Sau họp</span><div>Tuỳ chọn: <b>pyannote</b> tách người chính xác · <b>Tóm tắt AI</b> · Export · dọn audio theo cấu hình.</div></div>
+  </div>
+
+  <h2 id="models"><span class="n">5</span>Model &amp; độ nặng khi chạy</h2>
+  <table>
+    <tr><th>Chức năng</th><th>Model</th><th>Chạy ở</th><th>Đĩa</th><th>RAM/VRAM</th></tr>
+    <tr><td>Nghe→chữ (STT)</td><td>faster-whisper large-v3 (int8_float16)</td><td>GPU</td><td>~1.5&nbsp;GB</td><td>~2–3&nbsp;GB VRAM</td></tr>
+    <tr><td>Phát hiện tiếng nói</td><td>Silero VAD</td><td>CPU</td><td>vài MB</td><td>không đáng kể</td></tr>
+    <tr><td>Dịch</td><td>NLLB-200 distilled-600M (int8)</td><td>CPU</td><td>~1.2&nbsp;GB</td><td>~1–2&nbsp;GB RAM</td></tr>
+    <tr><td>Tách người (realtime)</td><td>Resemblyzer</td><td>CPU</td><td>~15&nbsp;MB</td><td>nhẹ</td></tr>
+    <tr><td>Tách người (chính xác)</td><td>pyannote 3.1</td><td>GPU (khi bấm)</td><td>~100&nbsp;MB</td><td>chạy sau họp</td></tr>
+    <tr><td>Tóm tắt AI</td><td>Claude CLI (mặc định) / Ollama…</td><td>☁️/local</td><td>—</td><td>xem mục 8</td></tr>
+  </table>
+  <div class="card">
+    <b>Tiêu thụ khi họp thực tế:</b>
+    <ul>
+      <li><b>GPU:</b> ~2–3&nbsp;GB VRAM cố định (còn dư ~9&nbsp;GB); tải bùng lên mỗi khi kết thúc 1 câu rồi hạ.</li>
+      <li><b>CPU:</b> trung bình (dịch + embedding + VAD), nhích theo từng câu.</li>
+      <li><b>RAM:</b> ~2–4&nbsp;GB. <b>Đĩa:</b> WAV ~2&nbsp;MB/phút/nguồn khi thu (mặc định xoá khi xong, chỉ giữ <code>.md</code>).</li>
+      <li><b>Lúc im lặng:</b> gần như 0 — VAD chặn, không transcribe khoảng lặng.</li>
+    </ul>
+  </div>
+
+  <h2 id="chiphi"><span class="n">6</span>Chi phí: Local vs Cloud</h2>
+  <div class="note"><b class="rec">Thu · STT · Dịch · Tách người = 100% LOCAL, MIỄN PHÍ, offline được. Âm thanh KHÔNG rời máy.</b></div>
+  <p>Ngoại lệ duy nhất là nút <b>Tóm tắt AI</b>:</p>
+  <table>
+    <tr><th>Provider</th><th>Gửi gì ra ngoài</th><th>Chi phí</th></tr>
+    <tr><td>Claude CLI (mặc định)</td><td>Văn bản transcript (không phải audio) → Anthropic</td><td>Dùng gói Claude Code sẵn có (tốn quota, không phí lẻ)</td></tr>
+    <tr><td>Codex CLI</td><td>Văn bản → OpenAI</td><td>Theo gói Codex</td></tr>
+    <tr><td>Gemini</td><td>Văn bản → Google</td><td>Cần API key, có thể tính phí</td></tr>
+    <tr><td><b>Ollama (Qwen/Llama…)</b></td><td><b>Không gì cả</b></td><td><b>100% local, miễn phí</b></td></tr>
+  </table>
+  <p>→ Nếu bạn <b>không bấm tóm tắt</b> hoặc dùng <b>Ollama</b>, toàn bộ ứng dụng là local tuyệt đối.</p>
+
+  <h2 id="ruiro"><span class="n">7</span>Rủi ro &amp; an toàn</h2>
+  <div class="danger-box"><b>⚖️ Pháp lý (quan trọng nhất):</b> ghi người khác khi họ không biết <b>có thể vi phạm luật</b> (nhiều nơi cần sự đồng ý của tất cả). App không hiện “đang ghi” cho nền tảng → bạn tự chịu trách nhiệm xin phép/khai báo khi luật yêu cầu.</div>
+  <div class="warn-box"><b>🔓 Dữ liệu lưu chưa mã hoá:</b> transcript (và audio nếu giữ) nằm plaintext trong thư mục lưu — ai truy cập được máy là đọc được. Dùng nút Xoá / cấu hình retention để dọn.</div>
+  <div class="warn-box"><b>☁️ Rò rỉ khi tóm tắt cloud:</b> transcript được gửi tới Anthropic/Google. Transcript được xử lý như “dữ liệu không tin cậy” (chống việc ai đó nói câu-lệnh trong họp), nhưng vẫn là dữ liệu rời máy — cân nhắc với họp nhạy cảm.</div>
+  <ul>
+    <li><b>🔑 Secret an toàn:</b> HF token / Gemini key lưu trong <b>Windows Credential Manager</b> (không plaintext).</li>
+    <li><b>🌐 Server nội bộ:</b> chỉ <code>127.0.0.1</code>, có token per-launch + kiểm Origin → tiến trình lạ khó chạm.</li>
+    <li><b>✅ Không có:</b> driver kernel, quyền admin, telemetry, “gọi về nhà”. Là app Python userland thuần.</li>
+  </ul>
+
+  <h2 id="sosanh"><span class="n">8</span>So sánh model tóm tắt local &amp; tư vấn</h2>
+  <p><span class="pill">Lưu ý</span> <b>Ollama là “trình chạy”, không phải model.</b> Chất lượng do <b>model</b> quyết định. Bảng dưới cho RTX 4070 12&nbsp;GB, transcript tiếng Việt xen Nhật/Anh:</p>
+  <table>
+    <tr><th>Model</th><th>VRAM (Q4)</th><th>Đa ngữ VN/Nhật</th><th>Tốc độ 4070</th><th>Nhận xét</th></tr>
+    <tr><td><b>Qwen2.5-7B-Instruct</b> ⭐</td><td>~5&nbsp;GB</td><td><b>Tốt nhất</b></td><td>Nhanh (~40–60 tok/s)</td><td class="rec">KHUYẾN NGHỊ — cân bằng nhất</td></tr>
+    <tr><td>Qwen2.5-14B-Instruct</td><td>~9&nbsp;GB</td><td>Xuất sắc</td><td>Vừa (~20–30)</td><td>Chất lượng cao, chạy sau họp</td></tr>
+    <tr><td>SeaLLMs-v3-7B / Vistral-7B</td><td>~5&nbsp;GB</td><td>Chuyên tiếng Việt</td><td>Nhanh</td><td>Nếu gần như chỉ tiếng Việt</td></tr>
+    <tr><td>Llama 3.1/3.3-8B</td><td>~5&nbsp;GB</td><td>Khá (VN yếu hơn)</td><td>Nhanh</td><td>Phổ biến nhưng không hợp VN bằng Qwen</td></tr>
+    <tr><td>Gemma 2-9B</td><td>~6&nbsp;GB</td><td>Khá</td><td>Vừa</td><td>Ổn</td></tr>
+    <tr><td>Phi-4-14B</td><td>~9&nbsp;GB</td><td>VN yếu</td><td>Vừa</td><td>Lý luận mạnh nhưng không hợp nội dung Việt</td></tr>
+  </table>
+  <div class="note">
+    <b>Tư vấn:</b> dùng <b class="rec">Qwen2.5-7B-Instruct</b> — đa ngữ tốt nhất cho VN+Nhật, chỉ ~5&nbsp;GB VRAM (chạy chung Whisper vẫn dư), nhanh, 100% local miễn phí.
+    Muốn chất lượng cao nhất offline: Qwen2.5-14B (chạy sau họp). So với Claude/Gemini cloud: cloud mượt hơn chút nhưng gửi text ra ngoài + tốn quota; Qwen local đủ tốt cho biên bản họp và riêng tư tuyệt đối.
+  </div>
+  <h3>Cách bật Qwen local</h3>
+  <pre><code># 1) Cài Ollama (ollama.com) rồi tải model:
+ollama pull qwen2.5:7b
+# 2) Trong AI Record → Settings: Summarizer provider = Ollama, model = qwen2.5:7b</code></pre>
+
+  <h2 id="luutru"><span class="n">9</span>Nơi lưu dữ liệu</h2>
+  <p>Mỗi phiên = một thư mục theo thời gian tại:</p>
+  <pre><code>%LOCALAPPDATA%\ai-record\sessions\&lt;YYYYMMDD-HHMMSS&gt;-&lt;tiêu-đề&gt;\
+   ├─ transcript.md        (dễ đọc — luôn lưu)
+   ├─ transcript.jsonl      (bản máy đọc)
+   ├─ summary.md            (khi bạn bấm Lưu tóm tắt)
+   ├─ transcript.txt        (nếu bật)
+   └─ audio_*.mp3 / .wav    (nếu bật giữ audio)</code></pre>
+  <p>Nút <b>📁</b> trong app mở thẳng thư mục này. Log chạy: <code>%LOCALAPPDATA%\ai-record\ai-record.log</code>.</p>
+
+  <footer>
+    AI Record — tài liệu này được sinh kèm ứng dụng. Cập nhật theo phiên bản mã nguồn tại <code>docs/guide.html</code>.
+    Bản chất kỹ thuật: WASAPI loopback + faster-whisper + NLLB + Resemblyzer/pyannote + summarizer cắm-rút.
+  </footer>
+
+</div>
+</body>
+</html>
