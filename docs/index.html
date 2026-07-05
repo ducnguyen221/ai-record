@@ -491,22 +491,22 @@
 
       <article class="feat reveal">
         <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 3h9l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M8 12h8"/><path d="M8 16h6"/></svg></div>
-        <h3>Tóm tắt AI, 5 kịch bản</h3>
-        <p>Reformat giữ nguyên chữ, biên bản họp, ghi chú học tập, action items hay bài viết. Provider tuỳ chọn: Claude, Codex, Gemini hoặc Ollama.</p>
+        <h3>Tóm tắt &amp; Phân tích AI</h3>
+        <p>Tab <b>Summary</b> gom nhóm ý và giữ nguyên cách diễn đạt; tab <b>Analyze</b> phân tích tổng quan cùng câu hỏi/rủi ro. Mặc định chạy trên <b>Qwen 2.5-7B local (Ollama)</b> — riêng tư, offline; đổi sang Claude, Codex hay Gemini trong Settings.</p>
       </article>
 
       <article class="feat full reveal">
         <div>
           <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></svg></div>
           <h3>100% cục bộ và riêng tư</h3>
-          <p>Âm thanh không bao giờ rời khỏi máy. Nghe, chuyển chữ, dịch và tách người đều chạy offline. Chỉ khi bạn chủ động bấm tóm tắt bằng model cloud thì phần văn bản mới được gửi đi. Đầu ra mặc định là bản <code style="font-family:var(--mono);font-size:.85em">.md</code>, tuỳ chọn kèm <code style="font-family:var(--mono);font-size:.85em">.txt</code> hoặc <code style="font-family:var(--mono);font-size:.85em">.mp3</code>.</p>
+          <p>Âm thanh không bao giờ rời khỏi máy. Nghe, chuyển chữ, dịch và tách người đều chạy offline — và với Qwen local mặc định thì cả Tóm tắt/Phân tích AI cũng 100% trên máy. Chỉ khi bạn tự đổi sang model cloud thì phần văn bản mới được gửi đi. Đầu ra mặc định là bản <code style="font-family:var(--mono);font-size:.85em">.md</code>, tuỳ chọn kèm <code style="font-family:var(--mono);font-size:.85em">.txt</code>, <code style="font-family:var(--mono);font-size:.85em">.mp3</code> và bản tóm tắt AI.</p>
         </div>
         <div class="privacy-tags">
           <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Nghe · trên máy</span>
           <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Chuyển chữ · trên máy</span>
           <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Dịch · trên máy</span>
           <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Tách người · trên máy</span>
-          <span class="ptag out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>Tóm tắt cloud · tuỳ chọn, bạn bấm</span>
+          <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Tóm tắt · Phân tích · Qwen local</span>
         </div>
       </article>
     </div>
@@ -560,8 +560,8 @@
   <div class="wrap install-grid">
     <div class="install-copy reveal">
       <span class="eyebrow"><span class="dot"></span>Cài đặt</span>
-      <h2 style="margin-top:14px">Chạy được sau bốn dòng lệnh</h2>
-      <p>Clone repo, chạy script cài một lần để dựng môi trường, rồi khởi động. Lần đầu sẽ tải model về (khoảng vài GB), sau đó dùng hoàn toàn offline.</p>
+      <h2 style="margin-top:14px">Chạy được sau vài dòng lệnh</h2>
+      <p>Clone repo, chạy script cài một lần để dựng môi trường, rồi khởi động. Lần đầu sẽ tải model về (khoảng vài GB), sau đó dùng hoàn toàn offline. Bước <code style="font-family:var(--mono);font-size:.85em">setup-ollama.ps1</code> là tuỳ chọn — cài Qwen local cho tab Summary/Analyze (mặc định); bỏ qua nếu chỉ dùng provider cloud.</p>
       <div class="req">
         <ul>
           <li><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span><span><b>Windows 11</b> và <b>Python 3.12</b></span></li>
@@ -587,8 +587,9 @@
       <div class="code-scroll">
 <pre><code id="installCode"><span class="pr">git</span> clone https://github.com/ducnguyen221/ai-record
 <span class="pr">cd</span> ai-record
-<span class="pr">powershell</span> -ExecutionPolicy Bypass -File setup.ps1   <span class="cm"># cài một lần: venv + torch CUDA + model</span>
-<span class="pr">python</span> -m ai_record                                <span class="cm"># hoặc double-click shortcut trên Desktop</span></code></pre>
+<span class="pr">powershell</span> -ExecutionPolicy Bypass -File setup.ps1              <span class="cm"># cài một lần: venv + torch CUDA + model</span>
+<span class="pr">powershell</span> -ExecutionPolicy Bypass -File scripts\setup-ollama.ps1   <span class="cm"># tuỳ chọn: Qwen local cho Summary/Analyze</span>
+<span class="pr">python</span> -m ai_record                                            <span class="cm"># hoặc double-click shortcut trên Desktop</span></code></pre>
       </div>
     </div>
   </div>
@@ -712,6 +713,7 @@
       'git clone https://github.com/ducnguyen221/ai-record',
       'cd ai-record',
       'powershell -ExecutionPolicy Bypass -File setup.ps1',
+      'powershell -ExecutionPolicy Bypass -File scripts\\setup-ollama.ps1',
       'python -m ai_record'
     ].join('\n');
     function flash(ok){

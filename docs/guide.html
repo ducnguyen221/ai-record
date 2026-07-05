@@ -66,9 +66,9 @@
       <h1>AI Record</h1>
       <div class="tag">Ghi chú cuộc họp &amp; đọc-chép giọng nói — chạy cục bộ trên máy bạn.</div>
       <div class="badges">
-        <span class="badge ok">100% Local (nghe · chữ · dịch · tách người)</span>
+        <span class="badge ok">100% Local (nghe · chữ · dịch · tách người · tóm tắt Qwen)</span>
         <span class="badge">RTX 4070 · Windows</span>
-        <span class="badge warn">Chỉ Tóm tắt cloud là tuỳ chọn</span>
+        <span class="badge warn">Cloud chỉ khi bạn tự đổi provider</span>
       </div>
     </div>
   </header>
@@ -89,19 +89,24 @@
   <h2 id="gioithieu"><span class="n">1</span>Giới thiệu</h2>
   <p><b>AI Record</b> là ứng dụng desktop cục bộ: khi bạn họp online (Teams/Zoom/Meet…) <em>hoặc</em> chỉ muốn tự nói,
   nó thu âm thanh của máy, chuyển thành văn bản <b>thời gian thực</b>, dịch câu tiếng nước ngoài sang tiếng Việt,
-  tách người nói, và (khi bạn muốn) tóm tắt lại bằng AI.</p>
+  tách người nói, và (khi bạn muốn) <b>Tóm tắt</b> / <b>Phân tích</b> bằng AI — mặc định chạy trên
+  <b>model Qwen 2.5-7B local (qua Ollama)</b>, riêng tư và offline.</p>
   <ul>
     <li><b>Hai chế độ:</b> <em>Meeting</em> (thu cả loa + mic) và <em>Dictation</em> (chỉ mic — đọc-chép ý tưởng dài).</li>
-    <li><b>Riêng tư:</b> âm thanh <b>không bao giờ rời khỏi máy</b>. Transcribe/dịch/tách người = local hoàn toàn.</li>
-    <li><b>Đầu ra:</b> mặc định chỉ lưu bản <code>.md</code> dễ đọc; tuỳ chọn kèm <code>.mp3</code> hoặc <code>.txt</code>.</li>
+    <li><b>Ba tab AI:</b> <em>Transcript</em> (luôn chạy realtime), <em>Summary</em> (gom nhóm ý, giữ nguyên cách diễn đạt ~ định dạng lại), <em>Analyze</em> (phân tích tổng quan + câu hỏi/rủi ro cốt lõi). Summary/Analyze chạy khi bạn bấm vào tab — lần đầu nạp model (~10–20&nbsp;s), sau đó nhanh; transcript vẫn cập nhật ngầm.</li>
+    <li><b>Riêng tư:</b> âm thanh <b>không bao giờ rời khỏi máy</b>. Nghe/chữ/dịch/tách người = local; với Qwen mặc định thì cả Tóm tắt/Phân tích cũng local.</li>
+    <li><b>Đầu ra:</b> mặc định chỉ lưu bản <code>.md</code> dễ đọc; tuỳ chọn kèm <code>.txt</code>, <code>.mp3</code> (audio) và bản <b>tóm tắt AI</b> — chọn qua nút lưu (biểu tượng save) trên thanh công cụ hoặc trong Settings.</li>
   </ul>
 
   <h2 id="caidat"><span class="n">2</span>Cài đặt &amp; Khởi chạy</h2>
   <h3>Cài một lần</h3>
   <pre><code>git clone https://github.com/ducnguyen221/ai-record
 cd ai-record
-powershell -ExecutionPolicy Bypass -File setup.ps1</code></pre>
-  <p>Script tạo môi trường <code>.venv</code> + cài torch CUDA + toàn bộ thư viện. Lần đầu tải ~4–6&nbsp;GB model.</p>
+powershell -ExecutionPolicy Bypass -File setup.ps1              # venv + torch CUDA + thư viện
+powershell -ExecutionPolicy Bypass -File scripts\setup-ollama.ps1   # tuỳ chọn: Qwen local cho tab Summary/Analyze
+python -m ai_record                                            # hoặc double-click shortcut trên Desktop</code></pre>
+  <p><code>setup.ps1</code> tạo môi trường <code>.venv</code> + cài torch CUDA + toàn bộ thư viện. Lần đầu tải ~4–6&nbsp;GB model.
+  Bước <code>setup-ollama.ps1</code> là <b>tuỳ chọn</b> nhưng cần cho tab <b>Summary/Analyze</b> ở provider mặc định (Qwen local): nó cài Ollama (winget) nếu thiếu + pull <code>qwen2.5:7b</code>. Bỏ qua nếu bạn chỉ dùng provider cloud (Claude/Codex/Gemini) trong Settings.</p>
   <h3>Mỗi lần dùng</h3>
   <ul>
     <li>Double-click nút <b>“AI Record”</b> trên Desktop (chạy im lặng, không cửa sổ terminal), hoặc</li>
@@ -111,15 +116,15 @@ powershell -ExecutionPolicy Bypass -File setup.ps1</code></pre>
 
   <h2 id="huongdan"><span class="n">3</span>Hướng dẫn sử dụng</h2>
   <div class="grid">
-    <div class="card"><b>Thanh nhỏ (compact)</b><br>Hàng nút phía trên: Start · chọn nguồn · Dịch · 📁 mở thư mục · ⤢ phóng to.
-      Phía dưới: 3 dòng transcript gần nhất, full chiều ngang.</div>
-    <div class="card"><b>Chọn nguồn khi Start</b><br><em>Both</em> (họp) · <em>Mic only</em> (đọc-chép) · <em>System only</em> (chỉ tiếng loa).</div>
-    <div class="card"><b>Dịch</b><br>Bật nút <b>Dịch</b> → câu tiếng nước ngoài hiện thêm bản tiếng Việt ngay dưới. Chọn ngôn ngữ nguồn trong Settings.</div>
+    <div class="card"><b>Thanh nhỏ (compact)</b><br>Hàng nút biểu tượng: 🎙 <b>dropdown mic</b> + 🔊 <b>dropdown loa</b> (chọn đúng thiết bị vào/ra — chấm xanh khi đang hoạt động), 🌐 <b>Dịch</b>, 💾 <b>định dạng đầu ra</b>, 📁 mở thư mục, ⚙ Settings, ⤢ phóng to, ✕ đóng. Phía dưới: các dòng transcript gần nhất, full chiều ngang.</div>
+    <div class="card"><b>Cửa sổ co giãn được</b><br>Kéo cạnh/góc để đổi kích thước — <b>cửa sổ càng cao thì hiện càng nhiều dòng transcript</b>. Bấm vào <b>logo</b> để mở website.</div>
+    <div class="card"><b>Chọn nguồn khi Start</b><br><em>Both</em> (họp) · <em>Mic only</em> (đọc-chép) · <em>System only</em> (chỉ tiếng loa). Nút camera (mờ) là chỗ dành sẵn cho quay màn hình/camera sau này.</div>
+    <div class="card"><b>Dịch (From→To)</b><br>Bấm biểu tượng 🌐 mở popover chọn <b>ngôn ngữ nguồn → đích</b> (mặc định English→Vietnamese) → câu tiếng nước ngoài hiện thêm bản dịch ngay dưới.</div>
     <div class="card"><b>Tách người nói</b><br>Mic = “You”; phía loa tự gán “Speaker 1/2…”, sửa tên được. Nút <b>Re-diarize</b> chạy chính xác hơn sau họp (cần HF token).</div>
-    <div class="card"><b>Tóm tắt AI (xem trước rồi mới lưu)</b><br>Phóng to → chọn kịch bản (Reformat/Minutes/Study/Action/Article) → <b>Run</b> → nội dung hiện lên → ưng thì <b>Lưu tóm tắt</b>.</div>
+    <div class="card"><b>Ba tab: Transcript · Summary · Analyze</b><br>Phóng to (⤢) để mở khung đầy đủ. <b>Transcript</b> luôn realtime. <b>Summary</b> = AI gom nhóm ý, giữ nguyên cách diễn đạt (định dạng lại). <b>Analyze</b> = phân tích tổng quan + câu hỏi/rủi ro. Bấm tab để chạy on-demand: lần đầu nạp model (~10–20&nbsp;s), sau đó nhanh.</div>
     <div class="card"><b>Copy &amp; Export</b><br>Nút 📋 Copy chép toàn bộ ra clipboard; nút tải <code>.md</code>/<code>.txt</code>/combined về máy.</div>
   </div>
-  <div class="note"><b>Reformat</b> = gom nhóm + định dạng đẹp nhưng <b>giữ nguyên từng chữ</b> (có kiểm tra tự động, sai thì tự dùng bản định dạng máy để không đổi nội dung). <b>Minutes</b> = tóm tắt kiểu biên bản họp.</div>
+  <div class="note"><b>Summary</b> gom nhóm ý và giữ nguyên cách diễn đạt (định dạng lại — có kiểm tra tự động, sai thì tự dùng bản định dạng máy để không đổi nội dung). <b>Analyze</b> đưa ra phân tích tổng quan cùng các câu hỏi/rủi ro cốt lõi. Cả hai mặc định chạy trên <b>Qwen local</b>; đổi provider trong Settings.</div>
 
   <h2 id="cochte"><span class="n">4</span>Cơ chế hoạt động</h2>
   <p>Một tiến trình Python chạy pipeline sản-xuất-tiêu-thụ; STT được ưu tiên tuyệt đối, phần dịch/tách người chạy sau và “vá” vào câu đã hiện.</p>
@@ -129,7 +134,7 @@ powershell -ExecutionPolicy Bypass -File setup.ps1</code></pre>
     <div class="step"><span class="k">3 · STT</span><div><b>faster-whisper large-v3</b> (GPU) chuyển mỗi câu thành chữ + tự nhận ngôn ngữ. Hiện lên UI &amp; lưu <b>ngay</b>.</div></div>
     <div class="step"><span class="k">4 · Vá</span><div>Chạy nền, ưu tiên thấp: <b>NLLB</b> dịch (nếu bật) + <b>Resemblyzer</b> gán người nói → gửi “patch” cập nhật câu đã hiện.</div></div>
     <div class="step"><span class="k">5 · Lưu</span><div>Ghi <code>transcript.jsonl</code> + <code>transcript.md</code> + WAV (chống mất khi treo máy), autosave từng câu.</div></div>
-    <div class="step"><span class="k">Sau họp</span><div>Tuỳ chọn: <b>pyannote</b> tách người chính xác · <b>Tóm tắt AI</b> · Export · dọn audio theo cấu hình.</div></div>
+    <div class="step"><span class="k">Sau họp</span><div>Tuỳ chọn: <b>pyannote</b> tách người chính xác · tab <b>Summary/Analyze</b> (mặc định Qwen local) · Export · dọn audio theo cấu hình.</div></div>
   </div>
 
   <h2 id="models"><span class="n">5</span>Model &amp; độ nặng khi chạy</h2>
@@ -140,7 +145,7 @@ powershell -ExecutionPolicy Bypass -File setup.ps1</code></pre>
     <tr><td>Dịch</td><td>NLLB-200 distilled-600M (int8)</td><td>CPU</td><td>~1.2&nbsp;GB</td><td>~1–2&nbsp;GB RAM</td></tr>
     <tr><td>Tách người (realtime)</td><td>Resemblyzer</td><td>CPU</td><td>~15&nbsp;MB</td><td>nhẹ</td></tr>
     <tr><td>Tách người (chính xác)</td><td>pyannote 3.1</td><td>GPU (khi bấm)</td><td>~100&nbsp;MB</td><td>chạy sau họp</td></tr>
-    <tr><td>Tóm tắt AI</td><td>Claude CLI (mặc định) / Ollama…</td><td>☁️/local</td><td>—</td><td>xem mục 8</td></tr>
+    <tr><td>Tóm tắt / Phân tích AI</td><td><b>Qwen2.5-7B local qua Ollama (mặc định)</b> / Claude CLI / Codex / Gemini</td><td><b>local</b>/☁️</td><td>—</td><td>xem mục 8</td></tr>
   </table>
   <div class="card">
     <b>Tiêu thụ khi họp thực tế:</b>
@@ -154,20 +159,20 @@ powershell -ExecutionPolicy Bypass -File setup.ps1</code></pre>
 
   <h2 id="chiphi"><span class="n">6</span>Chi phí: Local vs Cloud</h2>
   <div class="note"><b class="rec">Thu · STT · Dịch · Tách người = 100% LOCAL, MIỄN PHÍ, offline được. Âm thanh KHÔNG rời máy.</b></div>
-  <p>Ngoại lệ duy nhất là nút <b>Tóm tắt AI</b>:</p>
+  <p>Tab <b>Summary/Analyze</b> mặc định cũng là local; chỉ khi bạn tự đổi sang provider cloud thì văn bản mới rời máy:</p>
   <table>
     <tr><th>Provider</th><th>Gửi gì ra ngoài</th><th>Chi phí</th></tr>
-    <tr><td>Claude CLI (mặc định)</td><td>Văn bản transcript (không phải audio) → Anthropic</td><td>Dùng gói Claude Code sẵn có (tốn quota, không phí lẻ)</td></tr>
+    <tr><td><b>Qwen local qua Ollama (mặc định)</b></td><td><b>Không gì cả</b></td><td><b>100% local, miễn phí, offline</b></td></tr>
+    <tr><td>Claude CLI</td><td>Văn bản transcript (không phải audio) → Anthropic</td><td>Dùng gói Claude Code sẵn có (tốn quota, không phí lẻ)</td></tr>
     <tr><td>Codex CLI</td><td>Văn bản → OpenAI</td><td>Theo gói Codex</td></tr>
     <tr><td>Gemini</td><td>Văn bản → Google</td><td>Cần API key, có thể tính phí</td></tr>
-    <tr><td><b>Ollama (Qwen/Llama…)</b></td><td><b>Không gì cả</b></td><td><b>100% local, miễn phí</b></td></tr>
   </table>
-  <p>→ Nếu bạn <b>không bấm tóm tắt</b> hoặc dùng <b>Ollama</b>, toàn bộ ứng dụng là local tuyệt đối.</p>
+  <p>→ Giữ mặc định <b>Qwen local</b> (hoặc không bấm Summary/Analyze), toàn bộ ứng dụng là local tuyệt đối.</p>
 
   <h2 id="ruiro"><span class="n">7</span>Rủi ro &amp; an toàn</h2>
   <div class="danger-box"><b>⚖️ Pháp lý (quan trọng nhất):</b> ghi người khác khi họ không biết <b>có thể vi phạm luật</b> (nhiều nơi cần sự đồng ý của tất cả). App không hiện “đang ghi” cho nền tảng → bạn tự chịu trách nhiệm xin phép/khai báo khi luật yêu cầu.</div>
   <div class="warn-box"><b>🔓 Dữ liệu lưu chưa mã hoá:</b> transcript (và audio nếu giữ) nằm plaintext trong thư mục lưu — ai truy cập được máy là đọc được. Dùng nút Xoá / cấu hình retention để dọn.</div>
-  <div class="warn-box"><b>☁️ Rò rỉ khi tóm tắt cloud:</b> transcript được gửi tới Anthropic/Google. Transcript được xử lý như “dữ liệu không tin cậy” (chống việc ai đó nói câu-lệnh trong họp), nhưng vẫn là dữ liệu rời máy — cân nhắc với họp nhạy cảm.</div>
+  <div class="warn-box"><b>☁️ Rò rỉ khi dùng provider cloud:</b> mặc định là Qwen local nên không gửi gì. Chỉ khi bạn tự đổi Summary/Analyze sang Claude/Codex/Gemini thì transcript mới được gửi tới Anthropic/OpenAI/Google. Transcript được xử lý như “dữ liệu không tin cậy” (chống việc ai đó nói câu-lệnh trong họp), nhưng vẫn là dữ liệu rời máy — cân nhắc với họp nhạy cảm.</div>
   <ul>
     <li><b>🔑 Secret an toàn:</b> HF token / Gemini key lưu trong <b>Windows Credential Manager</b> (không plaintext).</li>
     <li><b>🌐 Server nội bộ:</b> chỉ <code>127.0.0.1</code>, có token per-launch + kiểm Origin → tiến trình lạ khó chạm.</li>
@@ -189,10 +194,11 @@ powershell -ExecutionPolicy Bypass -File setup.ps1</code></pre>
     <b>Tư vấn:</b> dùng <b class="rec">Qwen2.5-7B-Instruct</b> — đa ngữ tốt nhất cho VN+Nhật, chỉ ~5&nbsp;GB VRAM (chạy chung Whisper vẫn dư), nhanh, 100% local miễn phí.
     Muốn chất lượng cao nhất offline: Qwen2.5-14B (chạy sau họp). So với Claude/Gemini cloud: cloud mượt hơn chút nhưng gửi text ra ngoài + tốn quota; Qwen local đủ tốt cho biên bản họp và riêng tư tuyệt đối.
   </div>
-  <h3>Cách bật Qwen local</h3>
-  <pre><code># 1) Cài Ollama (ollama.com) rồi tải model:
-ollama pull qwen2.5:7b
-# 2) Trong AI Record → Settings: Summarizer provider = Ollama, model = qwen2.5:7b</code></pre>
+  <h3>Cài Qwen local (provider mặc định)</h3>
+  <p>Qwen là provider <b>mặc định</b> — chỉ cần cài Ollama + model một lần:</p>
+  <pre><code>powershell -ExecutionPolicy Bypass -File scripts\setup-ollama.ps1   # cài Ollama + pull qwen2.5:7b
+# đã là mặc định; muốn đổi model: AI Record → Settings → Summarization → Ollama model
+# muốn dùng cloud: Settings → provider = Claude CLI / Codex CLI / Gemini</code></pre>
 
   <h3>Mở rộng model &amp; cài trên máy khác</h3>
   <p>App có sẵn <b>catalog model</b> (<code>ai_record/summarizer_models.json</code>, mặc định <b>qwen2.5:7b</b>) + công cụ để chọn/mở rộng/cập nhật:</p>
@@ -206,7 +212,7 @@ ollama pull qwen2.5:7b
 
   <h2 id="luutru"><span class="n">9</span>Nơi lưu dữ liệu</h2>
   <p>Mỗi phiên = một thư mục theo thời gian tại:</p>
-  <pre><code>%LOCALAPPDATA%\ai-record\sessions\&lt;YYYYMMDD-HHMMSS&gt;-&lt;tiêu-đề&gt;\
+  <pre><code>&lt;app&gt;\records\&lt;YYYYMMDD-HHMMSS&gt;-&lt;tiêu-đề&gt;\
    ├─ transcript.md        (dễ đọc — luôn lưu)
    ├─ transcript.jsonl      (bản máy đọc)
    ├─ summary.md            (khi bạn bấm Lưu tóm tắt)
