@@ -1,0 +1,37 @@
+# ai-record — M1 runtime dependencies (Windows 11, Python 3.12).
+# NOTE: do NOT blindly reinstall torch / faster-whisper — see requirements-notes.md.
+
+# --- STT ---
+faster-whisper>=1.0.0
+
+# --- audio capture (Windows WASAPI) ---
+soundcard>=0.4.3          # preferred loopback capture
+PyAudioWPatch>=0.2.12     # fallback WASAPI loopback
+
+# --- resampling / audio io ---
+numpy>=1.26
+scipy>=1.11
+soxr>=0.3.7               # streaming resample (ResampleStream)
+soundfile>=0.12           # WAV assertions / optional io
+
+# --- VAD ---
+silero-vad>=5.1
+webrtcvad>=2.0.10
+
+# --- backend / server ---
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7
+websockets>=12
+
+# --- secrets ---
+keyring>=25              # Windows Credential Manager backend
+
+# --- desktop shell ---
+pywebview>=5.1
+
+# --- misc ---
+python-dateutil>=2.9
+
+# torch is provided by the existing CUDA install; listed for clarity only.
+# torch

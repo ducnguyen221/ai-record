@@ -1,0 +1,148 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-record</title>
+<link rel="stylesheet" href="styles.css">
+
+<!--
+  ai-record — single-page pywebview UI.
+  Two modes live in ONE window: a compact bar and an expanded view.
+  Overlays (consent / preflight / settings) sit on top of both.
+-->
+
+<div id="app" data-view="compact" hidden>
+
+  <!-- ============================ COMPACT BAR ============================ -->
+  <section id="compact" class="compact" aria-label="Recorder">
+    <button id="c-toggle" class="rec-btn" type="button" disabled>Start</button>
+
+    <div class="compact-body">
+      <div class="status-line" id="c-status" title="">
+        <span class="dot" id="c-dot" data-state="idle"></span>
+        <span class="status-text" id="c-status-text">Idle</span>
+      </div>
+      <div class="recent" id="c-recent" aria-live="polite">
+        <div class="recent-empty">No transcript yet.</div>
+      </div>
+    </div>
+
+    <button id="c-expand" class="icon-btn expand-btn" type="button" title="Expand" aria-label="Expand">⤢</button>
+  </section>
+
+  <!-- ============================ EXPANDED VIEW ============================ -->
+  <section id="expanded" class="expanded" aria-label="Session" hidden>
+    <header class="ex-header">
+      <button id="x-collapse" class="icon-btn" type="button" title="Collapse" aria-label="Collapse">⤢</button>
+
+      <input id="x-title" class="title-input" type="text" placeholder="Untitled session"
+             spellcheck="false" autocomplete="off">
+
+      <button id="x-toggle" class="rec-btn small" type="button" disabled>Start</button>
+
+      <div class="status-line inline" id="x-status" title="">
+        <span class="dot" id="x-dot" data-state="idle"></span>
+        <span class="status-text" id="x-status-text">Idle</span>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="search-wrap">
+        <input id="x-search" class="search-input" type="search" placeholder="Search transcript"
+               spellcheck="false" autocomplete="off">
+      </div>
+
+      <button id="x-settings" class="icon-btn" type="button" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </header>
+
+    <div class="chips" id="x-chips" aria-label="Status details"></div>
+
+    <main class="transcript-wrap">
+      <div id="x-transcript" class="transcript" tabindex="0" aria-label="Transcript"></div>
+      <button id="x-jump" class="jump-pill" type="button" hidden>Jump to latest ↓</button>
+    </main>
+  </section>
+
+</div>
+
+<!-- ============================ NOTICES ============================ -->
+<div id="notices" class="notices" aria-live="assertive"></div>
+
+<!-- ============================ CONSENT MODAL ============================ -->
+<div id="consent" class="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+    <h1 id="consent-title">Before you record</h1>
+    <div class="modal-body">
+      <p>ai-record captures meeting audio locally to produce a transcript. Please read and
+        understand the following before recording.</p>
+      <ul class="legal">
+        <li>Recording other people without their knowledge or consent may be illegal where you
+          live. Many jurisdictions have <strong>two-party (all-party) consent</strong> laws.</li>
+        <li>This app captures audio through your system's loopback device. As a technical
+          consequence of that method, the meeting platform does not display a recording
+          indicator. This is a side effect of how loopback capture works, not a feature for
+          concealing your recording.</li>
+        <li>You are solely responsible for obtaining any consent required and for complying with
+          the laws and policies that apply to you.</li>
+      </ul>
+      <p class="muted">You can reopen this text anytime from Settings → Legal &amp; Consent.</p>
+    </div>
+    <div class="modal-actions">
+      <button id="consent-agree" class="btn primary" type="button">I understand and agree</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ PREFLIGHT ============================ -->
+<div id="preflight" class="overlay" hidden>
+  <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="pf-title">
+    <h1 id="pf-title">System check</h1>
+    <p class="muted">Verifying that this machine can transcribe in real time.</p>
+    <div id="pf-rows" class="pf-rows"></div>
+    <div id="pf-preset" class="pf-preset"></div>
+    <div class="modal-actions">
+      <button id="pf-refresh" class="btn" type="button">Re-check</button>
+      <button id="pf-continue" class="btn primary" type="button">Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ SETTINGS DRAWER ============================ -->
+<div id="settings" class="drawer-overlay" hidden>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="set-title">
+    <header class="drawer-head">
+      <h2 id="set-title">Settings</h2>
+      <button id="set-close" class="icon-btn" type="button" title="Close" aria-label="Close">✕</button>
+    </header>
+    <div class="drawer-body" id="set-body"><!-- built by app.js --></div>
+  </aside>
+</div>
+
+<!-- ============================ CONFIRM DIALOG ============================ -->
+<div id="confirm" class="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h1 id="confirm-title">Are you sure?</h1>
+    <div class="modal-body"><p id="confirm-msg"></p></div>
+    <div class="modal-actions">
+      <button id="confirm-cancel" class="btn" type="button">Cancel</button>
+      <button id="confirm-ok" class="btn danger" type="button">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ NO-TOKEN FALLBACK ============================ -->
+<div id="no-token" class="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <h1>Can't connect</h1>
+    <div class="modal-body">
+      <p>This window was opened without a session token, so it can't talk to the local
+        ai-record service. Please relaunch the app from its launcher.</p>
+    </div>
+  </div>
+</div>
+
+<script src="app.js" defer></script>
