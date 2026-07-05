@@ -264,19 +264,19 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 /* ============================ TOOLBAR ICON DROPDOWNS ============================ */
 .output-dd, .translate-dd { position: relative; display: inline-flex; align-items: center; flex: none; }
 
-/* Active/open state for the translate + save icon buttons. */
-.translate-btn[aria-pressed="true"],
+/* Popover-OPEN feedback only (light fill). The ON/enabled state uses a green
+   .on-dot instead of a fill — consistent with the device buttons. */
 .translate-btn[aria-expanded="true"],
 .output-btn[aria-expanded="true"] {
   color: var(--accent);
   background: var(--accent-weak);
 }
-/* Save-icon "more than one format" badge (change #2). */
-.output-btn { position: relative; }
+.translate-btn, .output-btn { position: relative; }
+/* Green dot: save = >1 output format; translate = translation enabled. */
 .fmt-badge {
   position: absolute; top: 4px; right: 4px;
   width: 7px; height: 7px; border-radius: 50%;
-  background: var(--accent);
+  background: var(--ok);
   box-shadow: 0 0 0 1.5px var(--surface);
 }
 

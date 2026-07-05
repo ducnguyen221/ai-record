@@ -15,6 +15,15 @@ from ai_record.config import Settings, resolve_sessions_root  # noqa: E402
 from ai_record.store import SessionStore  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_settings_file(tmp_path_factory, monkeypatch):
+    """Never let a test write the REAL %LOCALAPPDATA%\\ai-record\\settings.json
+    (a server PUT /api/settings calls Settings.save() with no path). Redirect the
+    settings file to a throwaway per-test location."""
+    d = tmp_path_factory.mktemp("cfg")
+    monkeypatch.setattr("ai_record.config.settings_path", lambda: d / "settings.json", raising=False)
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(

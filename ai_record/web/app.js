@@ -70,7 +70,7 @@
     cToggle: $("c-toggle"), cDot: $("c-dot"), cStatusText: $("c-status-text"),
     cStatus: $("c-status"), cRecent: $("c-recent"), cExpand: $("c-expand"),
     cInput: $("c-input"), cOutputDev: $("c-output-dev"), cScreen: $("c-screen"),
-    cTranslate: $("c-translate"), cFolder: $("c-folder"),
+    cTranslate: $("c-translate"), cFolder: $("c-folder"), cExit: $("c-exit"),
     // expanded
     expanded: $("expanded"),
     xCollapse: $("x-collapse"), xTitle: $("x-title"), xToggle: $("x-toggle"),
@@ -461,6 +461,8 @@
     for (const btn of [el.cTranslate, el.xTranslate]) {
       btn.setAttribute("aria-pressed", on ? "true" : "false");
       btn.title = on ? "Dịch: bật" : "Dịch: tắt";
+      const dot = btn.querySelector(".on-dot");
+      if (dot) dot.hidden = !on;
     }
     refreshTranslatePops();
   }
@@ -1453,7 +1455,11 @@
   // side finalizes the active session. Browser fallback: POST /api/quit (best-effort
   // stop+finalize) then try to close the tab.
   function quitApp() {
-    confirmDialog("Thoát ai-record? Phiên đang ghi sẽ được lưu lại.", "Thoát", async () => {
+    const rec = !!state.recording;
+    const msg = rec
+      ? "Đang ghi. Thoát sẽ DỪNG ghi, lưu phiên theo cài đặt rồi thoát AI Record?"
+      : "Thoát AI Record?";
+    confirmDialog(msg, "Thoát", async () => {
       const pw = window.pywebview;
       if (pw && pw.api && typeof pw.api.exit === "function") {
         try { pw.api.exit(); return; } catch (_) { /* fall through to browser path */ }
@@ -1463,6 +1469,7 @@
     });
   }
   if (el.xExit) el.xExit.addEventListener("click", quitApp);
+  if (el.cExit) el.cExit.addEventListener("click", quitApp);
 
   /* ============================ CONSENT ============================ */
   function openConsent() { el.consent.hidden = false; }

@@ -32,3 +32,6 @@ Thumbs.db
 
 # internal QA transcripts (not for public repo)
 docs/reviews/
+
+# meeting records now live inside the app folder (user request)
+records/

@@ -125,8 +125,14 @@ def localappdata_dir() -> Path:
     return Path(base) / APP_NAME
 
 
+def app_root() -> Path:
+    """The application folder (parent of the ``ai_record`` package)."""
+    return Path(__file__).resolve().parent.parent
+
+
 def default_sessions_root() -> Path:
-    return localappdata_dir() / "sessions"
+    # Records live INSIDE the app folder (per user request): <app>/records/<session>/.
+    return app_root() / "records"
 
 
 def settings_path() -> Path:
