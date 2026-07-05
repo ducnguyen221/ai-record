@@ -263,6 +263,7 @@ _ENUMS: dict[str, tuple[str, ...]] = {
     "diarization_device": ("", "cuda", "cpu"),
     "summarizer_provider": ("claude_cli", "codex_cli", "gemini", "ollama"),
     "theme": ("auto", "light", "dark"),
+    "audio_export_format": ("mp3", "wav"),
 }
 
 
@@ -364,6 +365,11 @@ class Settings:
     # storage / durability
     retention_days: int = 0
     fsync_interval_ms: int = 1000
+
+    # output artefacts (transcript.md is ALWAYS written; these are opt-in extras)
+    keep_audio: bool = False           # keep per-source audio after finalize (else deleted)
+    audio_export_format: str = "mp3"   # "mp3" (transcode via ffmpeg) | "wav" (leave as-is)
+    save_txt: bool = False             # also write a plain-text transcript.txt on finalize
 
     # websocket robustness
     ws_client_queue_max: int = 256

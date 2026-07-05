@@ -806,6 +806,10 @@ class SessionStore:
             d = self._dir(session_id)
             for source in ("you", "them"):
                 concat_segments_to_wav(d, source)
+            # Optional output artefacts: transcript.txt + audio keep/transcode/delete.
+            # Robust: never let output-file handling crash finalize (all paths under d).
+            with contextlib.suppress(Exception):
+                self._write_optional_outputs(session_id, d, meta, records)
             if meta.ended_at is None:
                 meta.ended_at = _now_iso()
                 try:
@@ -815,6 +819,87 @@ class SessionStore:
                 except ValueError:
                     meta.duration_sec = None
             self._write_meta(meta)
+
+    def _write_optional_outputs(
+        self, session_id: str, d: Path, meta: "SessionMeta", records: list[UtteranceRecord]
+    ) -> None:
+        """Write opt-in outputs at finalize (SPEC §5.7 output artefacts).
+
+        ``transcript.md`` is always written elsewhere. Here we honour the settings:
+          * ``save_txt`` → also write a plain-text ``transcript.txt`` (reusing the
+            export renderer so the format matches downloads).
+          * audio: default (``keep_audio`` off) DELETES the per-source wav(s) +
+            ``samples.idx``. Note: tier-2 offline re-diarize needs the audio, so it
+            is unavailable once the audio is not kept. When ``keep_audio`` is on and
+            ``audio_export_format == "mp3"`` we transcode each canonical wav to mp3
+            via ffmpeg (deleting the wav on success); ``"wav"`` leaves the wavs.
+        """
+        s = self.settings
+
+        # 1) Plain-text transcript (reuse export.transcript_txt — do not duplicate).
+        if getattr(s, "save_txt", False):
+            from .export import transcript_txt
+
+            with contextlib.suppress(Exception):
+                _atomic_write(d / "transcript.txt", transcript_txt(meta, records))
+
+        # 2) Audio: keep / transcode / delete.
+        keep_audio = getattr(s, "keep_audio", False)
+        fmt = getattr(s, "audio_export_format", "mp3")
+        if not keep_audio:
+            # Default: md-only. Drop every wav (canonical + per-minute segments) + idx.
+            for wav in list(d.glob("*.wav")):
+                with contextlib.suppress(OSError):
+                    wav.unlink()
+            idx = d / "samples.idx"
+            if idx.exists():
+                with contextlib.suppress(OSError):
+                    idx.unlink()
+            return
+
+        if fmt == "mp3":
+            self._transcode_audio_to_mp3(d)
+        # fmt == "wav": leave the canonical wavs (and segments) in place.
+
+    def _transcode_audio_to_mp3(self, d: Path) -> None:
+        """Transcode each canonical ``audio_<src>.wav`` to mp3 via ffmpeg, then drop the
+        wav(s) + per-minute segments on success. Missing ffmpeg → keep wav + warn."""
+        import shutil
+        import subprocess
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            log.warning("ffmpeg not on PATH; keeping WAV audio (mp3 export skipped)")
+            return
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        for source in ("you", "them"):
+            wav = d / f"audio_{source}.wav"
+            if not wav.exists():
+                continue
+            mp3 = d / f"audio_{source}.mp3"
+            try:
+                proc = subprocess.run(
+                    [ffmpeg, "-y", "-i", str(wav), "-codec:a", "libmp3lame",
+                     "-qscale:a", "2", str(mp3)],
+                    capture_output=True,
+                    creationflags=creationflags,
+                    timeout=300,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                log.warning("ffmpeg transcode failed for %s: %s; keeping WAV", source, exc)
+                continue
+            if proc.returncode == 0 and mp3.exists() and mp3.stat().st_size > 0:
+                # Success: drop the canonical wav + per-minute segment wavs for this source.
+                with contextlib.suppress(OSError):
+                    wav.unlink()
+                for seg in d.glob(f"audio_{source}.[0-9][0-9][0-9].wav"):
+                    with contextlib.suppress(OSError):
+                        seg.unlink()
+            else:
+                log.warning("ffmpeg exited %s for %s; keeping WAV", proc.returncode, source)
+                with contextlib.suppress(OSError):
+                    if mp3.exists():
+                        mp3.unlink()
 
     def detect_incomplete(self) -> list[SessionMeta]:
         return [m for m in self.list_sessions() if m.ended_at is None]

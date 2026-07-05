@@ -192,26 +192,22 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 
 .compact {
   height: 100%;
-  min-height: 100px;
   display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
+  flex-direction: column;   /* toolbar row on top, transcript below */
+  gap: 8px;
+  padding: 10px 12px;
   background: var(--surface);
 }
-.compact-actions {
+.compact-toolbar {
   flex: none;
   display: flex;
-  flex-direction: column;
-  gap: 7px;
+  align-items: center;
+  gap: 8px;
 }
-.compact-source {
-  width: 142px;
-  min-width: 0;
-  height: 28px;
-}
+.compact-source { min-width: 116px; height: 28px; }
 .compact-translate { flex: none; }
-.compact-body { flex: 1 1 auto; min-width: 0; }
+.compact-body { flex: 1 1 auto; min-width: 0; }  /* legacy (unused after toolbar redesign) */
+.compact .recent { flex: 1 1 auto; min-height: 0; }   /* transcript fills the width + remaining height */
 
 .status-line { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .status-line.inline { margin-bottom: 0; }
@@ -259,6 +255,7 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   flex: none;
 }
 .ex-header .spacer { flex: 1 1 auto; }
+.summary-head .spacer { flex: 1 1 auto; }
 
 .title-input {
   border: 1px solid transparent;

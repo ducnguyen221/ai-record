@@ -88,3 +88,37 @@ def test_acknowledge_consent():
     s = Settings().acknowledge_consent()
     assert s.consent_acknowledged is True
     assert s.consent_acknowledged_at is not None
+
+
+# --------------------------------------------------------------------------- #
+# Output-file settings (Feature 2)
+# --------------------------------------------------------------------------- #
+def test_output_settings_defaults():
+    s = Settings()
+    assert s.keep_audio is False
+    assert s.audio_export_format == "mp3"
+    assert s.save_txt is False
+
+
+def test_output_settings_put_roundtrip(tmp_path):
+    path = tmp_path / "settings.json"
+    s = Settings().update({"keep_audio": True, "audio_export_format": "wav", "save_txt": True})
+    s.save(path)
+    loaded = Settings.load(path)
+    assert loaded.keep_audio is True
+    assert loaded.audio_export_format == "wav"
+    assert loaded.save_txt is True
+
+
+def test_output_settings_bad_format_rejected():
+    with pytest.raises(ValueError):
+        Settings(audio_export_format="flac")
+
+
+def test_output_settings_appear_in_redacted():
+    red = Settings(keep_audio=True, save_txt=True).redacted(Secrets())
+    assert red["keep_audio"] is True
+    assert red["save_txt"] is True
+    assert red["audio_export_format"] == "mp3"
+    # redaction still only exposes secret booleans, never values.
+    assert "hf_token" not in red and "gemini_api_key" not in red

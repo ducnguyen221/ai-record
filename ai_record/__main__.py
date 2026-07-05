@@ -119,13 +119,22 @@ def main() -> None:
                         except Exception:
                             log.debug("window resize failed", exc_info=True)
 
+                def exit(self):
+                    """Quit cleanly: destroy the window so webview.start() returns and
+                    the finally-block below stops capture + finalizes the session."""
+                    if self._window is not None:
+                        try:
+                            self._window.destroy()
+                        except Exception:
+                            log.debug("window destroy failed", exc_info=True)
+
             _api = _WindowApi()
             _api._window = webview.create_window(
                 "ai-record",
                 url,
                 js_api=_api,
                 width=560,
-                height=150,          # compact bar size (matches app.js requestResize)
+                height=180,          # compact bar size (toolbar row + ~3 transcript lines; matches app.js)
                 min_size=(380, 120),
                 frameless=True,
                 on_top=True,

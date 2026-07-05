@@ -248,6 +248,17 @@ def create_app(state: AppState) -> FastAPI:
     async def status() -> dict:
         return _status(state)
 
+    @app.post("/api/quit", dependencies=dep)
+    async def quit_app() -> dict:
+        """Best-effort clean shutdown fallback (Feature 1) for non-pywebview hosts.
+
+        The primary exit path is the pywebview ``api.exit()`` (which destroys the
+        window and lets ``__main__`` finalize). In a plain browser there is no window
+        to destroy, so we at least stop capture + finalize the active session here.
+        """
+        sid = _stop_capture(state)
+        return {"ok": True, "session_id": sid}
+
     @app.post("/api/open-folder", dependencies=dep)
     async def open_folder() -> dict:
         """Reveal the sessions storage root in Explorer (works while recording)."""
@@ -329,14 +340,30 @@ def create_app(state: AppState) -> FastAPI:
             return JSONResponse(status_code=502, content={"error": str(exc)})
         except ValueError as exc:  # unknown scenario
             raise HTTPException(status_code=422, detail=str(exc))
-        state.store.write_summary(sid, result.markdown, scenario=result.scenario, provider=result.provider)
-        state.submit({"type": "summary", "state": "done", "markdown": result.markdown})
+        # Preview only: DO NOT persist summary.md here. The user reviews the result and
+        # explicitly saves it via POST /summary/save (Feature 3). No "saved" broadcast.
         return {
             "markdown": result.markdown,
             "scenario": result.scenario,
             "provider": result.provider,
             "reformat_fallback": result.reformat_fallback,
         }
+
+    @app.post("/api/sessions/{sid}/summary/save", dependencies=dep)
+    async def save_summary(sid: str, body: dict) -> dict:
+        # Persist a previewed summary on user approval (path-confined via store._dir).
+        folder = state.store._dir(sid)  # raises InvalidSessionId -> 404 on traversal
+        if not folder.exists():
+            raise HTTPException(status_code=404, detail="session not found")
+        markdown = (body or {}).get("markdown")
+        if not markdown or not str(markdown).strip():
+            raise HTTPException(status_code=422, detail="markdown is required")
+        scenario = (body or {}).get("scenario")
+        provider = (body or {}).get("provider")
+        state.store.write_summary(sid, str(markdown), scenario=scenario, provider=provider)
+        state.submit({"type": "summary", "state": "done", "markdown": str(markdown)})
+        summarized_at = state.store.load_session(sid).meta.summarized_at
+        return {"ok": True, "summarized_at": summarized_at}
 
     @app.get("/api/sessions/{sid}/summary", dependencies=dep)
     async def get_summary(sid: str) -> dict:

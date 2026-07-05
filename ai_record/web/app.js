@@ -62,9 +62,11 @@
     xCollapse: $("x-collapse"), xTitle: $("x-title"), xToggle: $("x-toggle"),
     xDot: $("x-dot"), xStatusText: $("x-status-text"), xStatus: $("x-status"),
     xChips: $("x-chips"), xSearch: $("x-search"), xSettings: $("x-settings"),
+    xExit: $("x-exit"),
     xTranscript: $("x-transcript"), xJump: $("x-jump"),
     xSource: $("x-source"), xTranslate: $("x-translate"),
     sumScenario: $("sum-scenario"), sumProvider: $("sum-provider"), sumRun: $("sum-run"),
+    copyTranscript: $("copy-transcript"),
     dlTranscriptMd: $("dl-transcript-md"), dlTranscriptTxt: $("dl-transcript-txt"),
     dlSummaryMd: $("dl-summary-md"), dlSummaryTxt: $("dl-summary-txt"),
     dlCombinedMd: $("dl-combined-md"), rediarizeRun: $("rediarize-run"),
@@ -72,6 +74,7 @@
     toolStatus: $("tool-status"), summaryArea: $("summary-area"),
     summaryMeta: $("summary-meta"), summaryFallback: $("summary-fallback"),
     summaryOutput: $("summary-output"),
+    summarySave: $("summary-save"), summaryCopy: $("summary-copy"),
     // overlays
     consent: $("consent"), consentAgree: $("consent-agree"),
     preflight: $("preflight"), pfRows: $("pf-rows"), pfPreset: $("pf-preset"),
@@ -165,7 +168,7 @@
     $("expanded").hidden = !expanded;
     $("compact").hidden = expanded;
     if (expanded) { requestResize(900, 640); scrollToLatest(); }
-    else { requestResize(560, 150); }
+    else { requestResize(560, 180); }
   }
 
   /* ============================ TIME / TEXT UTILS ============================ */
@@ -652,6 +655,56 @@
     }
   }
 
+  /* ============================ COPY TO CLIPBOARD ============================ */
+  // navigator.clipboard may be unavailable/restricted under pywebview; fall back
+  // to a hidden <textarea> + execCommand("copy").
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* fall through */ }
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (_) { return false; }
+  }
+
+  // Build the full transcript as plain text, matching the .txt export shape:
+  //   [hh:mm:ss] Speaker: text
+  //       translation
+  function buildTranscriptText() {
+    const seqs = [...state.utterances.keys()].sort((a, b) => a - b);
+    const lines = [];
+    for (const s of seqs) {
+      const rec = state.utterances.get(s).record;
+      const spk = speakerText(rec).text;
+      lines.push(`[${fmtTs(rec.start)}] ${spk}: ${rec.text || ""}`);
+      if (rec.translation) lines.push(`    ${rec.translation}`);
+    }
+    return lines.join("\n");
+  }
+
+  async function copyTranscript() {
+    const text = buildTranscriptText();
+    if (!text.trim()) { setToolStatus("Chưa có nội dung để copy.", "warn"); return; }
+    const ok = await copyText(text);
+    setToolStatus(ok ? "Đã copy" : "Không copy được.", ok ? "info" : "error");
+  }
+
+  async function copySummary() {
+    const md = state.currentSummary && state.currentSummary.markdown;
+    if (!md) { setToolStatus("Chưa có tóm tắt để copy.", "warn"); return; }
+    const ok = await copyText(String(md));
+    setToolStatus(ok ? "Đã copy" : "Không copy được.", ok ? "info" : "error");
+  }
+
   function renderSummary(payload) {
     // Error branch: a failed/unavailable summarize (non-ok response) shows the reason
     // in the summary panel instead of a blank "Summary ready" (review I2).
@@ -660,6 +713,8 @@
       el.summaryArea.hidden = false;
       el.summaryFallback.hidden = true;
       el.summaryMeta.textContent = "Summary unavailable";
+      if (el.summarySave) el.summarySave.hidden = true;
+      if (el.summaryCopy) el.summaryCopy.hidden = true;
       renderMarkdown("**Summary failed:** " + String(payload.error), el.summaryOutput);
       return;
     }
@@ -670,7 +725,38 @@
     const scenario = payload && payload.scenario ? scenarioLabel(payload.scenario) : "Summary";
     const provider = payload && payload.provider ? providerLabel(payload.provider) : "";
     el.summaryMeta.textContent = [scenario, provider].filter(Boolean).join(" · ");
+    // A preview exists → offer to persist (Feature 3) + copy (Feature 4). `saved`
+    // marks an already-persisted summary (from a save round-trip or WS "done").
+    if (el.summarySave) {
+      el.summarySave.hidden = !markdown;
+      el.summarySave.disabled = false;
+      el.summarySave.textContent = payload && payload.saved ? "Đã lưu" : "Lưu tóm tắt";
+    }
+    if (el.summaryCopy) el.summaryCopy.hidden = !markdown;
     renderMarkdown(markdown, el.summaryOutput);
+  }
+
+  /* Persist the previewed summary only on explicit user approval (Feature 3). */
+  async function saveSummary() {
+    const sid = activeSessionId();
+    const cur = state.currentSummary;
+    if (!sid) { notice("Start or select a session before saving.", "warn"); return; }
+    if (!cur || !cur.markdown) { notice("Run a summary before saving.", "warn"); return; }
+    el.summarySave.disabled = true;
+    setToolStatus("Đang lưu tóm tắt...");
+    try {
+      await api(`/api/sessions/${encodeURIComponent(sid)}/summary/save`, {
+        method: "POST",
+        body: { markdown: cur.markdown, scenario: cur.scenario, provider: cur.provider },
+      });
+      cur.saved = true;
+      el.summarySave.textContent = "Đã lưu";
+      setToolStatus("Đã lưu tóm tắt.");
+    } catch (e) {
+      el.summarySave.disabled = false;
+      setToolStatus("Không lưu được tóm tắt.", "error");
+      notice("Couldn't save summary: " + (e.message || e), "error");
+    }
   }
 
   function scenarioLabel(value) {
@@ -871,6 +957,9 @@
   }
 
   el.sumRun.addEventListener("click", runSummary);
+  if (el.summarySave) el.summarySave.addEventListener("click", saveSummary);
+  if (el.summaryCopy) el.summaryCopy.addEventListener("click", copySummary);
+  if (el.copyTranscript) el.copyTranscript.addEventListener("click", copyTranscript);
   el.dlTranscriptMd.addEventListener("click", () => downloadExport("transcript", "md"));
   el.dlTranscriptTxt.addEventListener("click", () => downloadExport("transcript", "txt"));
   el.dlSummaryMd.addEventListener("click", () => downloadExport("summary", "md"));
@@ -888,6 +977,22 @@
   /* ============================ EXPAND / COLLAPSE ============================ */
   el.cExpand.addEventListener("click", () => setView("expanded"));
   el.xCollapse.addEventListener("click", () => setView("compact"));
+
+  /* ============================ EXIT (Feature 1) ============================ */
+  // Primary path: pywebview api.exit() destroys the native window so the Python
+  // side finalizes the active session. Browser fallback: POST /api/quit (best-effort
+  // stop+finalize) then try to close the tab.
+  function quitApp() {
+    confirmDialog("Thoát ai-record? Phiên đang ghi sẽ được lưu lại.", "Thoát", async () => {
+      const pw = window.pywebview;
+      if (pw && pw.api && typeof pw.api.exit === "function") {
+        try { pw.api.exit(); return; } catch (_) { /* fall through to browser path */ }
+      }
+      try { await api("/api/quit", { method: "POST" }); } catch (_) { /* best-effort */ }
+      try { window.close(); } catch (_) { /* browsers may block */ }
+    });
+  }
+  if (el.xExit) el.xExit.addEventListener("click", quitApp);
 
   /* ============================ CONSENT ============================ */
   function openConsent() { el.consent.hidden = false; }
@@ -1226,6 +1331,15 @@
       (v) => putSetting({ retention_days: v }), { number: true, min: 0 }));
     el.setBody.appendChild(gStore);
 
+    /* --- Output files (Feature 2) --- */
+    const gOut = group("Lưu kết quả");
+    gOut.appendChild(rowReadonly("Bản ghi (.md)", "transcript.md — luôn lưu", "luôn lưu"));
+    gOut.appendChild(rowToggle("Kèm audio (.mp3)", "giữ audio, chuyển sang mp3 khi kết thúc",
+      s.keep_audio, (v) => putSetting({ keep_audio: v, audio_export_format: "mp3" })));
+    gOut.appendChild(rowToggle("Kèm .txt", "cũng lưu transcript.txt dạng văn bản thuần",
+      s.save_txt, (v) => putSetting({ save_txt: v })));
+    el.setBody.appendChild(gOut);
+
     /* --- Appearance --- */
     const gAppr = group("Appearance");
     gAppr.appendChild(rowSelect("Theme", null, s.theme || "auto",
@@ -1489,10 +1603,21 @@
         applySpeakerRename(msg.old, msg.new);
         break;
       case "summary":
-        // Backend emits {type:"summary", state:"started|done|error", markdown?} —
-        // match that shape (was the dead "summary:done" branch).
-        if (msg.state === "done" && msg.markdown) renderSummary(msg);
-        else if (msg.state === "error" && msg.error) renderSummary({ error: msg.error });
+        // Backend now emits {type:"summary", state:"done", markdown} only AFTER an
+        // explicit save (Feature 3) → mark it saved. Preserve the current preview's
+        // scenario/provider labels when this is the client that just saved.
+        if (msg.state === "done" && msg.markdown) {
+          const cur = state.currentSummary || {};
+          renderSummary({
+            markdown: msg.markdown,
+            scenario: cur.scenario,
+            provider: cur.provider,
+            reformat_fallback: cur.reformat_fallback,
+            saved: true,
+          });
+        } else if (msg.state === "error" && msg.error) {
+          renderSummary({ error: msg.error });
+        }
         break;
       case "rediarize":
         // Backend emits {type:"rediarize", state, detail} — drive progress and, on

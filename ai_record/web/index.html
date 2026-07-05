@@ -13,28 +13,28 @@
 
   <!-- ============================ COMPACT BAR ============================ -->
   <section id="compact" class="compact" aria-label="Recorder">
-    <div class="compact-actions">
-      <button id="c-toggle" class="rec-btn" type="button" disabled>Start</button>
+    <!-- All controls on ONE top row -->
+    <div class="compact-toolbar">
+      <button id="c-toggle" class="rec-btn small" type="button" disabled>Start</button>
       <select id="c-source" class="source-select compact-source" aria-label="Capture source">
         <option value="both">Both (meeting)</option>
         <option value="mic">Mic only (dictation)</option>
         <option value="system">System only</option>
       </select>
-    </div>
-
-    <div class="compact-body">
-      <div class="status-line" id="c-status" title="">
+      <button id="c-translate" class="toggle-btn compact-translate" type="button" aria-pressed="false">Dịch</button>
+      <div class="status-line inline" id="c-status" title="">
         <span class="dot" id="c-dot" data-state="idle"></span>
         <span class="status-text" id="c-status-text">Idle</span>
       </div>
-      <div class="recent" id="c-recent" aria-live="polite">
-        <div class="recent-empty">No transcript yet.</div>
-      </div>
+      <div class="spacer"></div>
+      <button id="c-folder" class="icon-btn" type="button" title="Mở thư mục lưu" aria-label="Open folder">📁</button>
+      <button id="c-expand" class="icon-btn expand-btn" type="button" title="Expand" aria-label="Expand">⤢</button>
     </div>
 
-    <button id="c-translate" class="toggle-btn compact-translate" type="button" aria-pressed="false">Dịch</button>
-    <button id="c-folder" class="icon-btn" type="button" title="Mở thư mục lưu" aria-label="Open folder">📁</button>
-    <button id="c-expand" class="icon-btn expand-btn" type="button" title="Expand" aria-label="Expand">⤢</button>
+    <!-- Full-width transcript area below (last ~3 lines) -->
+    <div class="recent" id="c-recent" aria-live="polite">
+      <div class="recent-empty">No transcript yet.</div>
+    </div>
   </section>
 
   <!-- ============================ EXPANDED VIEW ============================ -->
@@ -73,6 +73,8 @@
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
         </svg>
       </button>
+
+      <button id="x-exit" class="icon-btn" type="button" title="Thoát ai-record" aria-label="Thoát">✕ Thoát</button>
     </header>
 
     <div class="chips" id="x-chips" aria-label="Status details"></div>
@@ -102,6 +104,7 @@
 
         <div class="tool-divider" aria-hidden="true"></div>
 
+        <button id="copy-transcript" class="btn" type="button">📋 Copy</button>
         <button id="dl-transcript-md" class="btn" type="button">Transcript .md</button>
         <button id="dl-transcript-txt" class="btn" type="button">Transcript .txt</button>
         <button id="dl-summary-md" class="btn" type="button">Summary .md</button>
@@ -118,6 +121,9 @@
         <div class="summary-head">
           <span id="summary-meta">Summary</span>
           <span id="summary-fallback" class="fallback-note" hidden>formatted deterministically to preserve exact wording</span>
+          <div class="spacer"></div>
+          <button id="summary-save" class="btn primary" type="button" hidden>Lưu tóm tắt</button>
+          <button id="summary-copy" class="btn" type="button" hidden>📋 Copy</button>
         </div>
         <div id="summary-output" class="summary-output"></div>
       </div>

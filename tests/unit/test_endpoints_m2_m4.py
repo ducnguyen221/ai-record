@@ -44,7 +44,8 @@ def test_languages(client):
 # --------------------------------------------------------------------------- #
 # summarize + summary
 # --------------------------------------------------------------------------- #
-def test_summarize_writes_summary_and_get(client, monkeypatch):
+def test_summarize_previews_without_saving(client, monkeypatch):
+    """Feature 3: summarize RETURNS a preview but must NOT persist summary.md."""
     store = client.ai_store
     sid = store.create("sum").session_id
     store.append_utterance(_rec(store, sid, text="alpha"))
@@ -69,9 +70,40 @@ def test_summarize_writes_summary_and_get(client, monkeypatch):
     assert body["reformat_fallback"] is False
     assert "alpha" in body["markdown"]
 
+    # summarize is preview-only: summary.md is NOT written and meta is untouched.
+    assert not (store._dir(sid) / "summary.md").exists()
+    data = store.load_session(sid)
+    assert data.summary is None
+    assert data.meta.summary_scenario is None
+    assert client.get(f"/api/sessions/{sid}/summary", headers=H).status_code == 404
+
+
+def test_summary_save_persists_and_get(client):
+    """Feature 3: POST /summary/save writes summary.md; token required; path-confined."""
+    store = client.ai_store
+    sid = store.create("save").session_id
+    store.append_utterance(_rec(store, sid, text="alpha"))
+
+    # Token required.
+    assert client.post(f"/api/sessions/{sid}/summary/save",
+                       json={"markdown": "## X"}).status_code == 401
+    # Empty markdown rejected.
+    assert client.post(f"/api/sessions/{sid}/summary/save", headers=H,
+                       json={"markdown": "   "}).status_code == 422
+    # Traversal / bad id → 404 (path-confined via _dir).
+    assert client.post("/api/sessions/..%2Fescape/summary/save", headers=H,
+                       json={"markdown": "x"}).status_code == 404
+
+    r = client.post(f"/api/sessions/{sid}/summary/save", headers=H,
+                    json={"markdown": "## Saved\nalpha", "scenario": "reformat", "provider": "fakeprov"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["summarized_at"]
+
     data = store.load_session(sid)
     assert data.summary and "alpha" in data.summary
     assert data.meta.summary_scenario == "reformat"
+    assert data.meta.summary_provider == "fakeprov"
 
     g = client.get(f"/api/sessions/{sid}/summary", headers=H)
     assert g.status_code == 200

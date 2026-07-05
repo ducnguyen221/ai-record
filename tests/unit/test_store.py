@@ -6,11 +6,13 @@ import wave
 import numpy as np
 import pytest
 
+from ai_record.config import Settings, resolve_sessions_root
 from ai_record.store import (
     InvalidSessionId,
     RawSegmentWriter,
     SessionStore,
     UtteranceRecord,
+    WavWriter,
     read_wav_mono16k,
     _now_iso,
 )
@@ -199,6 +201,10 @@ def test_raw_segment_writer_valid_wav_and_concat(store: SessionStore):
 
 def test_finalize_concats_all_segments_exact(store: SessionStore):
     """SessionStore.finalize() must concat EVERY segment, not just 000 (Critical #2)."""
+    # Keep the audio so the concatenated canonical WAV survives finalize for inspection
+    # (default finalize now deletes audio unless keep_audio is set — Feature 2).
+    store.settings.keep_audio = True
+    store.settings.audio_export_format = "wav"
     sess = store.create("m")
     sid = sess.session_id
     # Two independent writers whose segments must both be fully recovered.
@@ -254,3 +260,99 @@ def test_detect_incomplete_and_retention(store: SessionStore):
     assert any(m.session_id == sess.session_id for m in store.detect_incomplete())
     store.finalize(sess.session_id)
     assert all(m.session_id != sess.session_id for m in store.detect_incomplete())
+
+
+# --------------------------------------------------------------------------- #
+# finalize output artefacts (Feature 2)
+# --------------------------------------------------------------------------- #
+def _store_with(tmp_path, **overrides) -> SessionStore:
+    settings = Settings(sessions_root=str(tmp_path / "s"), **overrides)
+    return SessionStore(resolve_sessions_root(settings), settings)
+
+
+def test_finalize_save_txt_writes_plain_transcript(tmp_path):
+    store = _store_with(tmp_path, save_txt=True)
+    sid = store.create("txt").session_id
+    store.append_utterance(_rec(store, sid, text="hello world", speaker="Alice"))
+    store.finalize(sid)
+    txt = store._dir(sid) / "transcript.txt"
+    assert txt.exists()
+    body = txt.read_text(encoding="utf-8")
+    assert "hello world" in body
+    assert "**" not in body  # plain text, no markdown markers
+
+
+def test_finalize_without_save_txt_omits_txt(tmp_path):
+    store = _store_with(tmp_path, save_txt=False)
+    sid = store.create("notxt").session_id
+    store.append_utterance(_rec(store, sid, text="hi"))
+    store.finalize(sid)
+    assert not (store._dir(sid) / "transcript.txt").exists()
+
+
+def test_finalize_deletes_audio_when_not_kept(tmp_path):
+    store = _store_with(tmp_path, keep_audio=False)
+    sid = store.create("noaudio").session_id
+    d = store._dir(sid)
+    w = WavWriter(str(d / "audio_them.wav"))
+    w.write(np.zeros(16000, dtype=np.float32))
+    w.close()
+    (d / "samples.idx").write_text('{"kind":"segment"}\n', encoding="utf-8")
+    store.finalize(sid)
+    assert not (d / "audio_them.wav").exists()
+    assert not (d / "samples.idx").exists()
+
+
+def test_finalize_transcodes_mp3_with_mocked_ffmpeg(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    store = _store_with(tmp_path, keep_audio=True, audio_export_format="mp3")
+    sid = store.create("mp3").session_id
+    d = store._dir(sid)
+    w = WavWriter(str(d / "audio_you.wav"))
+    w.write(np.zeros(16000, dtype=np.float32))
+    w.close()
+
+    monkeypatch.setattr(shutil, "which", lambda name: "ffmpeg" if name == "ffmpeg" else None)
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        out = cmd[-1]  # ffmpeg output path is the last arg
+        with open(out, "wb") as f:
+            f.write(b"ID3fake-mp3-bytes")
+        return _Result()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    store.finalize(sid)
+    assert (d / "audio_you.mp3").exists()
+    assert not (d / "audio_you.wav").exists()
+
+
+def test_finalize_keeps_wav_when_ffmpeg_missing(tmp_path, monkeypatch):
+    import shutil
+
+    store = _store_with(tmp_path, keep_audio=True, audio_export_format="mp3")
+    sid = store.create("noffmpeg").session_id
+    d = store._dir(sid)
+    w = WavWriter(str(d / "audio_you.wav"))
+    w.write(np.zeros(16000, dtype=np.float32))
+    w.close()
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    store.finalize(sid)
+    # ffmpeg absent → keep the wav, no mp3 produced.
+    assert (d / "audio_you.wav").exists()
+    assert not (d / "audio_you.mp3").exists()
+
+
+def test_finalize_keeps_wav_when_format_wav(tmp_path):
+    store = _store_with(tmp_path, keep_audio=True, audio_export_format="wav")
+    sid = store.create("wav").session_id
+    d = store._dir(sid)
+    w = WavWriter(str(d / "audio_them.wav"))
+    w.write(np.zeros(16000, dtype=np.float32))
+    w.close()
+    store.finalize(sid)
+    assert (d / "audio_them.wav").exists()
