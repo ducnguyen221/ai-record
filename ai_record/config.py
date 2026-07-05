@@ -401,7 +401,7 @@ class Settings:
     pyannote_model: str = "pyannote/speaker-diarization-3.1"
 
     # summarization (M4)
-    summarizer_provider: str = "claude_cli"
+    summarizer_provider: str = "ollama"   # local Qwen (qwen2.5:7b) by default — private, offline
     summary_prompt: str = ""
     summary_scenarios: dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_SUMMARY_SCENARIOS)
