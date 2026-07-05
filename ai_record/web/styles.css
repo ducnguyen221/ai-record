@@ -840,6 +840,28 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 .set-row .ctl.model-picker select { max-width: 260px; }
 .set-row .ctl.model-picker input[type="text"] { max-width: 260px; }
 
+/* Editable AI prompts (Summary / Analyze): stack label + full-width textarea. */
+.set-note {
+  color: var(--text-faint); font-size: 11.5px; line-height: 1.5;
+  margin: 0 0 10px;
+}
+.set-row.prompt-row {
+  flex-direction: column; align-items: stretch; gap: 8px;
+}
+.set-row.prompt-row .lbl { width: 100%; }
+.prompt-box {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius-sm); padding: 8px 10px;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.55;
+  min-height: 132px; resize: vertical;
+}
+.prompt-box:focus {
+  outline: none; border-color: var(--accent, var(--border-strong));
+}
+.prompt-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
 .lang-picker {
   display: flex;
   flex-wrap: wrap;

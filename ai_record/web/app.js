@@ -59,6 +59,44 @@
     { value: "ollama", label: "Ollama" },
   ];
 
+  // Default instruction prompts for the two editable AI actions. These MUST stay in
+  // sync with DEFAULT_SUMMARY_SCENARIOS["reformat"|"analyze"] in ai_record/config.py —
+  // they back the "Khôi phục mặc định" (reset) buttons in Settings and are only used
+  // when the server hasn't given us a value.
+  const DEFAULT_SUMMARY_PROMPTS = {
+    reformat:
+      "You are a meticulous transcript editor. You are given a raw MEETING / VOICE " +
+      "transcript that may mix Vietnamese, English, and Japanese. Your ONLY job is to " +
+      "reorganize it so it is easier to read — never to rewrite it.\n\n" +
+      "Hard rules (a downstream integrity check rejects any violation):\n" +
+      "- Preserve every utterance's wording VERBATIM. Do NOT translate, paraphrase, " +
+      "correct, summarize, add, remove, merge, split, or reorder the words a speaker said.\n" +
+      "- Keep each original speaker label and its [timestamp] exactly as given, attached " +
+      "to the same words.\n" +
+      "- Every original utterance MUST still appear, in full, in your output.\n\n" +
+      "What you MAY do:\n" +
+      "- Group consecutive, related utterances into thematic sections.\n" +
+      "- Add Markdown structure ONLY: `##` headings that name each topic, and bullet " +
+      "points that lay out the utterances beneath them.\n\n" +
+      "Output Markdown only — no preamble, no closing commentary.",
+    analyze:
+      "You are a sharp, careful meeting analyst. You are given a MEETING / VOICE " +
+      "transcript that may mix Vietnamese, English, and Japanese. Read and understand " +
+      "the whole thing before you write.\n\n" +
+      "Produce a GENERAL ANALYSIS (not a plain restatement), written in Vietnamese, as " +
+      "skimmable Markdown with EXACTLY these four sections in this order:\n" +
+      "## Tổng quan — 2–3 câu: đây là cuộc trao đổi gì, ai tham gia (nếu rõ), bối cảnh " +
+      "và mục đích.\n" +
+      "## Các điểm/chủ đề chính — gạch đầu dòng những luận điểm, chủ đề và quyết định " +
+      "quan trọng nhất, nhóm theo chủ đề.\n" +
+      "## Tóm tắt cô đọng — vài câu văn xuôi cô đọng lại nội dung cốt lõi.\n" +
+      "## Câu hỏi phản biện / Gợi ý / Rủi ro — 3 đến 6 gạch đầu dòng nêu câu hỏi phản " +
+      "biện, điểm còn mơ hồ, rủi ro cần lưu ý, hoặc gợi ý cho bước tiếp theo.\n\n" +
+      "Constraints: base EVERYTHING strictly on what the transcript actually says. Do " +
+      "NOT invent facts, names, numbers, decisions, or claims that are not present. If " +
+      "something is unclear or missing, say so instead of guessing. Output Markdown only.",
+  };
+
   /* ============================ DOM SHORTCUTS ============================ */
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -1723,6 +1761,60 @@
     row.querySelector(".ctl").appendChild(input);
     return row;
   }
+  // Stacked row with a full-width, resizable textarea + reset/save buttons.
+  // ``key`` is the summary scenario ("reformat" | "analyze"); ``value`` is the
+  // current prompt (falls back to the embedded default when the server omits it).
+  function rowPrompt(label, sub, key, value) {
+    const row = document.createElement("div");
+    row.className = "set-row prompt-row";
+    const l = document.createElement("div");
+    l.className = "lbl";
+    l.textContent = label;
+    if (sub) { const sm = document.createElement("small"); sm.textContent = sub; l.appendChild(sm); }
+    row.appendChild(l);
+
+    const ta = document.createElement("textarea");
+    ta.className = "prompt-box";
+    ta.rows = 7;
+    ta.spellcheck = false;
+    ta.value = value != null && value !== "" ? value : (DEFAULT_SUMMARY_PROMPTS[key] || "");
+    // Save on blur when the text actually changed.
+    ta.addEventListener("change", () => putSummaryScenario(key, ta.value));
+    row.appendChild(ta);
+
+    const actions = document.createElement("div");
+    actions.className = "prompt-actions";
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "btn subtle";
+    resetBtn.textContent = "Khôi phục mặc định";
+    resetBtn.addEventListener("click", async () => {
+      ta.value = DEFAULT_SUMMARY_PROMPTS[key] || "";
+      await putSummaryScenario(key, ta.value);
+      notice("Đã khôi phục prompt mặc định.", "info");
+    });
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "btn primary";
+    saveBtn.textContent = "Lưu prompt";
+    saveBtn.addEventListener("click", async () => {
+      await putSummaryScenario(key, ta.value);
+      notice("Đã lưu prompt.", "info");
+    });
+    actions.append(resetBtn, saveBtn);
+    row.appendChild(actions);
+    return row;
+  }
+
+  // Merge one scenario into the existing summary_scenarios map and PUT the whole map
+  // (so the other scenarios — minutes/study_notes/action_tracker/article — are kept).
+  async function putSummaryScenario(key, text) {
+    const s = state.settings || {};
+    const merged = Object.assign({}, s.summary_scenarios || {});
+    merged[key] = text;
+    await putSetting({ summary_scenarios: merged });
+  }
+
   function rowReadonly(label, sub, value) {
     const row = mkRow(label, sub);
     row.classList.add("readonly");
@@ -1929,6 +2021,27 @@
     gSum.appendChild(buildModelPickerRow());
     el.setBody.appendChild(gSum);
     fillModelPicker();
+
+    /* --- Prompt AI (Summary / Analyze): editable instruction prompts --- */
+    const gPrompt = group("Prompt AI (Summary / Analyze)");
+    const pNote = document.createElement("p");
+    pNote.className = "set-note";
+    pNote.textContent =
+      "Chỉnh cách AI tóm tắt/phân tích. Nội dung transcript được tự động thêm vào sau prompt.";
+    gPrompt.appendChild(pNote);
+    const scen = (s.summary_scenarios && typeof s.summary_scenarios === "object")
+      ? s.summary_scenarios : {};
+    gPrompt.appendChild(rowPrompt(
+      "Prompt Summary",
+      "tab Summary — định dạng lại, giữ nguyên câu chữ (reformat)",
+      "reformat",
+      scen.reformat));
+    gPrompt.appendChild(rowPrompt(
+      "Prompt Analyze",
+      "tab Analyze — phân tích tổng quát + phản biện (analyze)",
+      "analyze",
+      scen.analyze));
+    el.setBody.appendChild(gPrompt);
 
     /* --- Legal --- */
     const gLegal = group("Legal");

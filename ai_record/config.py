@@ -46,12 +46,20 @@ SUMMARY_SCENARIOS: tuple[str, ...] = (
 
 DEFAULT_SUMMARY_SCENARIOS: dict[str, str] = {
     "reformat": (
-        "You are given a meeting transcript. Restructure it WITHOUT changing, adding, "
-        "removing, translating, paraphrasing, or reordering the wording of any utterance. "
-        "You may ONLY: (a) group related consecutive utterances into thematic sections, and "
-        "(b) add Markdown structure — `##` topic headings and bullet lists — while preserving "
-        "each original 'Speaker + [timestamp]' label and its EXACT text. Every original "
-        "utterance's text MUST still appear verbatim in your output. Output Markdown only."
+        "You are a meticulous transcript editor. You are given a raw MEETING / VOICE "
+        "transcript that may mix Vietnamese, English, and Japanese. Your ONLY job is to "
+        "reorganize it so it is easier to read — never to rewrite it.\n\n"
+        "Hard rules (a downstream integrity check rejects any violation):\n"
+        "- Preserve every utterance's wording VERBATIM. Do NOT translate, paraphrase, "
+        "correct, summarize, add, remove, merge, split, or reorder the words a speaker said.\n"
+        "- Keep each original speaker label and its [timestamp] exactly as given, attached "
+        "to the same words.\n"
+        "- Every original utterance MUST still appear, in full, in your output.\n\n"
+        "What you MAY do:\n"
+        "- Group consecutive, related utterances into thematic sections.\n"
+        "- Add Markdown structure ONLY: `##` headings that name each topic, and bullet "
+        "points that lay out the utterances beneath them.\n\n"
+        "Output Markdown only — no preamble, no closing commentary."
     ),
     "minutes": (
         "Read and understand the whole meeting transcript, then write concise meeting minutes, "
@@ -73,15 +81,21 @@ DEFAULT_SUMMARY_SCENARIOS: dict[str, str] = {
         "flowing prose that explains what was covered. Vietnamese-first. Output Markdown."
     ),
     "analyze": (
-        "Read and understand the whole transcript, then produce a GENERAL ANALYSIS "
-        "(distinct from a plain summary), Vietnamese-first, in Markdown with these four "
-        "sections: (a) '## Tổng quan' — a short overview of what this is about; "
-        "(b) '## Các điểm/chủ đề chính' — the main points/themes as a bullet list; "
-        "(c) '## Tóm tắt cô đọng' — a condensed summary in a few sentences; and "
-        "(d) '## Câu hỏi phản biện / Gợi ý / Rủi ro cần lưu ý' — 3 to 6 critical/"
-        "challenging questions, suggestions, or risks worth noting. Base EVERYTHING only "
-        "on what the transcript actually says; do NOT invent facts, numbers, or claims "
-        "that are not present in it. Output Markdown."
+        "You are a sharp, careful meeting analyst. You are given a MEETING / VOICE "
+        "transcript that may mix Vietnamese, English, and Japanese. Read and understand "
+        "the whole thing before you write.\n\n"
+        "Produce a GENERAL ANALYSIS (not a plain restatement), written in Vietnamese, as "
+        "skimmable Markdown with EXACTLY these four sections in this order:\n"
+        "## Tổng quan — 2–3 câu: đây là cuộc trao đổi gì, ai tham gia (nếu rõ), bối cảnh "
+        "và mục đích.\n"
+        "## Các điểm/chủ đề chính — gạch đầu dòng những luận điểm, chủ đề và quyết định "
+        "quan trọng nhất, nhóm theo chủ đề.\n"
+        "## Tóm tắt cô đọng — vài câu văn xuôi cô đọng lại nội dung cốt lõi.\n"
+        "## Câu hỏi phản biện / Gợi ý / Rủi ro — 3 đến 6 gạch đầu dòng nêu câu hỏi phản "
+        "biện, điểm còn mơ hồ, rủi ro cần lưu ý, hoặc gợi ý cho bước tiếp theo.\n\n"
+        "Constraints: base EVERYTHING strictly on what the transcript actually says. Do "
+        "NOT invent facts, names, numbers, decisions, or claims that are not present. If "
+        "something is unclear or missing, say so instead of guessing. Output Markdown only."
     ),
 }
 

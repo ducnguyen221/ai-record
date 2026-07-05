@@ -3,6 +3,7 @@ import json
 import pytest
 
 from ai_record.config import (
+    DEFAULT_SUMMARY_SCENARIOS,
     PRESETS,
     Secrets,
     Settings,
@@ -154,4 +155,46 @@ def test_output_formats_dedupes_preserving_order():
 def test_output_formats_in_redacted_and_no_secret_leak():
     red = Settings(output_formats=["md", "summary"]).redacted(Secrets())
     assert red["output_formats"] == ["md", "summary"]
+    assert "hf_token" not in red and "gemini_api_key" not in red
+
+
+# --------------------------------------------------------------------------- #
+# Editable Summary / Analyze prompts (summary_scenarios)
+# --------------------------------------------------------------------------- #
+def test_default_summary_prompts_present_and_nonempty():
+    for key in ("reformat", "analyze"):
+        assert key in DEFAULT_SUMMARY_SCENARIOS
+        assert DEFAULT_SUMMARY_SCENARIOS[key].strip()
+    # reformat must keep the verbatim contract; analyze must be a real analysis.
+    assert "VERBATIM" in DEFAULT_SUMMARY_SCENARIOS["reformat"]
+    assert "Tổng quan" in DEFAULT_SUMMARY_SCENARIOS["analyze"]
+
+
+def test_settings_include_default_scenarios():
+    s = Settings()
+    assert s.summary_scenarios["reformat"] == DEFAULT_SUMMARY_SCENARIOS["reformat"]
+    assert s.summary_scenarios["analyze"] == DEFAULT_SUMMARY_SCENARIOS["analyze"]
+    # All catalog scenarios are seeded, not just the two editable ones.
+    for key in ("minutes", "study_notes", "action_tracker", "article"):
+        assert key in s.summary_scenarios
+
+
+def test_summary_scenarios_put_roundtrip(tmp_path):
+    path = tmp_path / "settings.json"
+    edited = dict(DEFAULT_SUMMARY_SCENARIOS)
+    edited["reformat"] = "My custom verbatim prompt."
+    edited["analyze"] = "My custom analysis prompt."
+    s = Settings().update({"summary_scenarios": edited})
+    s.save(path)
+    loaded = Settings.load(path)
+    assert loaded.summary_scenarios["reformat"] == "My custom verbatim prompt."
+    assert loaded.summary_scenarios["analyze"] == "My custom analysis prompt."
+    # Untouched scenarios survive the merge round-trip.
+    assert loaded.summary_scenarios["minutes"] == DEFAULT_SUMMARY_SCENARIOS["minutes"]
+
+
+def test_summary_scenarios_in_redacted_no_secret_leak():
+    red = Settings().redacted(Secrets())
+    assert "summary_scenarios" in red
+    assert red["summary_scenarios"]["reformat"] == DEFAULT_SUMMARY_SCENARIOS["reformat"]
     assert "hf_token" not in red and "gemini_api_key" not in red
