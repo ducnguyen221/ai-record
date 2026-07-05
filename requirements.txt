@@ -5,8 +5,11 @@
 faster-whisper>=1.0.0
 
 # --- audio capture (Windows WASAPI) ---
-soundcard>=0.4.3          # preferred loopback capture
-PyAudioWPatch>=0.2.12     # fallback WASAPI loopback
+soundcard>=0.4.3          # preferred loopback capture (pure-python, no build tools)
+# Optional fallback WASAPI backend — C extension, needs prebuilt wheel or MSVC.
+# Install manually only if the soundcard backend fails on your machine:
+#   pip install PyAudioWPatch
+# PyAudioWPatch>=0.2.12
 
 # --- resampling / audio io ---
 numpy>=1.26
@@ -15,8 +18,8 @@ soxr>=0.3.7               # streaming resample (ResampleStream)
 soundfile>=0.12           # WAV assertions / optional io
 
 # --- VAD ---
-silero-vad>=5.1
-webrtcvad>=2.0.10
+silero-vad>=5.1                # preferred (torch, no build tools)
+webrtcvad-wheels>=2.0.14       # fallback VAD, prebuilt wheels (no MSVC needed)
 
 # --- backend / server ---
 fastapi>=0.111
