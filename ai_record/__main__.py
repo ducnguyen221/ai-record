@@ -106,11 +106,27 @@ def main() -> None:
         try:
             import webview  # type: ignore
 
-            webview.create_window(
+            class _WindowApi:
+                """Exposed to the page as window.pywebview.api; lets the UI resize
+                the native window when switching compact <-> expanded views."""
+                def __init__(self) -> None:
+                    self._window = None
+
+                def resize(self, width, height):
+                    if self._window is not None:
+                        try:
+                            self._window.resize(int(width), int(height))
+                        except Exception:
+                            log.debug("window resize failed", exc_info=True)
+
+            _api = _WindowApi()
+            _api._window = webview.create_window(
                 "ai-record",
                 url,
-                width=520,
-                height=160,
+                js_api=_api,
+                width=560,
+                height=150,          # compact bar size (matches app.js requestResize)
+                min_size=(380, 120),
                 frameless=True,
                 on_top=True,
                 resizable=True,

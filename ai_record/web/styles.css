@@ -90,6 +90,7 @@
 html, body {
   margin: 0;
   height: 100%;
+  overflow: hidden;               /* the window never shows its own scrollbar; scroll lives in inner regions */
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);

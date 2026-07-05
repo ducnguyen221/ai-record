@@ -165,7 +165,7 @@
     $("expanded").hidden = !expanded;
     $("compact").hidden = expanded;
     if (expanded) { requestResize(900, 640); scrollToLatest(); }
-    else { requestResize(520, 120); }
+    else { requestResize(560, 150); }
   }
 
   /* ============================ TIME / TEXT UTILS ============================ */
