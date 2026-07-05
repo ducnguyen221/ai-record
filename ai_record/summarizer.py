@@ -149,8 +149,13 @@ class ClaudeCliSummarizer:
         # Restrictive, VALID invocation: `plan` mode never executes/edits, an empty
         # allow-list plus an explicit deny-list means no tool can run. (`deny` was an
         # INVALID --permission-mode value → non-zero exit → 500; see review C1.)
+        # Use the FULL resolved path: on Windows `claude` is a `claude.CMD` npm shim
+        # and CreateProcess (shell=False) can't find/exec bare "claude" -> the run
+        # died with WinError 2 even though shutil.which found it (Summarize/Analyze
+        # silently failed). Passing the resolved path fixes it.
+        exe = shutil.which("claude") or "claude"
         cmd = [
-            "claude", "-p",
+            exe, "-p",
             "--permission-mode", "plan",
             "--allowedTools", "",
             "--disallowedTools", "Bash Edit Write Read WebFetch WebSearch",
@@ -173,7 +178,8 @@ class CodexCliSummarizer:
 
     def summarize(self, prompt: str, transcript_text: str, meta: dict) -> str:
         payload = build_payload(prompt, transcript_text)
-        cmd = ["codex", "exec", "--sandbox", "read-only", "-"]
+        exe = shutil.which("codex") or "codex"  # resolve full path (Windows .CMD shim)
+        cmd = [exe, "exec", "--sandbox", "read-only", "-"]
         return _run_cli(cmd, payload, self.settings.summary_timeout_s)
 
 

@@ -94,12 +94,19 @@ def _apply_windows_taskbar_icon(ico_path: str, title: str) -> None:
                 found.clear()
                 u.EnumWindows(cb, 0)
                 if found:
+                    GWL_STYLE, WS_THICKFRAME, WS_MAXIMIZEBOX = -16, 0x40000, 0x10000
+                    SWP = 2 | 1 | 4 | 0x20  # NOMOVE|NOSIZE|NOZORDER|FRAMECHANGED
                     for hwnd in found:
                         if big:
                             u.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
                         if small:
                             u.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small)
-                    log.info("taskbar icon applied to %d window(s)", len(found))
+                        # Frameless windows lack a sizing border → can't be resized by
+                        # dragging edges/corners. Add WS_THICKFRAME so the user can.
+                        st = u.GetWindowLongW(hwnd, GWL_STYLE)
+                        u.SetWindowLongW(hwnd, GWL_STYLE, st | WS_THICKFRAME | WS_MAXIMIZEBOX)
+                        u.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP)
+                    log.info("taskbar icon + resize border applied to %d window(s)", len(found))
                     return
                 time.sleep(0.2)
             log.warning("taskbar icon: no owned top-level window found")
@@ -186,6 +193,14 @@ def main() -> None:
                         except Exception:
                             log.debug("window destroy failed", exc_info=True)
 
+                def open_external(self, target_url):
+                    """Open a URL in the user's default browser (e.g. the logo -> website)."""
+                    try:
+                        import webbrowser
+                        webbrowser.open(str(target_url))
+                    except Exception:
+                        log.debug("open_external failed", exc_info=True)
+
             _api = _WindowApi()
             _icon = str(Path(__file__).resolve().parent / "assets" / "ai-record.ico")
             _apply_windows_taskbar_icon(_icon, "AI Record")
@@ -194,7 +209,7 @@ def main() -> None:
                 url,
                 js_api=_api,
                 width=560,
-                height=180,          # compact bar size (toolbar row + ~3 transcript lines; matches app.js)
+                height=250,          # compact size; tall enough that the Translate popover fits w/o scroll (matches app.js)
                 min_size=(380, 120),
                 frameless=True,
                 on_top=True,

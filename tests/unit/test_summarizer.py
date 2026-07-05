@@ -165,7 +165,8 @@ def test_claude_cli_argv_is_valid_and_stdin_only(monkeypatch):
     assert out == "SUMMARY OK"
 
     cmd, kw = captured["cmd"], captured["kwargs"]
-    assert cmd[0] == "claude"
+    # cmd[0] is the resolved binary path (e.g. claude.CMD on Windows) or bare "claude".
+    assert cmd[0].replace("\\", "/").split("/")[-1].lower().startswith("claude")
     assert "-p" in cmd
     # `--permission-mode`, if present, must be a VALID value (never the old `deny`).
     if "--permission-mode" in cmd:
@@ -197,7 +198,8 @@ def test_codex_cli_argv_is_valid_and_stdin_only(monkeypatch):
     assert out == "SUMMARY OK"
 
     cmd, kw = captured["cmd"], captured["kwargs"]
-    assert cmd[:2] == ["codex", "exec"]
+    assert cmd[0].replace("\\", "/").split("/")[-1].lower().startswith("codex")
+    assert cmd[1] == "exec"
     # real sandbox flag with a valid value
     assert "--sandbox" in cmd
     assert cmd[cmd.index("--sandbox") + 1] == "read-only"
