@@ -52,6 +52,63 @@ def _wait_ready(port: int, timeout: float = 15.0) -> bool:
     return False
 
 
+def _apply_windows_taskbar_icon(ico_path: str, title: str) -> None:
+    """Windows: set an explicit AppUserModelID and push the .ico onto the window via
+    WM_SETICON so the TASKBAR shows the AI Record logo instead of pythonw.exe's icon.
+    Best-effort; a background thread waits for the (frameless) window to exist."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DucNguyen.AIRecord")
+    except Exception:
+        log.debug("AUMID set failed", exc_info=True)
+
+    def _worker() -> None:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            u = ctypes.windll.user32
+            k = ctypes.windll.kernel32
+            pid = k.GetCurrentProcessId()
+            WM_SETICON, ICON_SMALL, ICON_BIG = 0x80, 0, 1
+            IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+            big = u.LoadImageW(0, ico_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+            small = u.LoadImageW(0, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+            if not big and not small:
+                log.warning("taskbar icon: could not load %s", ico_path)
+                return
+            proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            found: list[int] = []
+
+            def _cb(hwnd, _lp):
+                wpid = wintypes.DWORD()
+                u.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+                # top-level, visible window owned by THIS process = the app window
+                if wpid.value == pid and u.IsWindowVisible(hwnd) and not u.GetWindow(hwnd, 4):
+                    found.append(hwnd)
+                return True
+
+            cb = proc(_cb)
+            for _ in range(80):
+                found.clear()
+                u.EnumWindows(cb, 0)
+                if found:
+                    for hwnd in found:
+                        if big:
+                            u.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
+                        if small:
+                            u.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small)
+                    log.info("taskbar icon applied to %d window(s)", len(found))
+                    return
+                time.sleep(0.2)
+            log.warning("taskbar icon: no owned top-level window found")
+        except Exception:
+            log.debug("taskbar icon set failed", exc_info=True)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def main() -> None:
     localappdata_dir().mkdir(parents=True, exist_ok=True)
     # pythonw.exe (windowless / desktop shortcut) has NO console: sys.stdout and
@@ -131,6 +188,7 @@ def main() -> None:
 
             _api = _WindowApi()
             _icon = str(Path(__file__).resolve().parent / "assets" / "ai-record.ico")
+            _apply_windows_taskbar_icon(_icon, "AI Record")
             _api._window = webview.create_window(
                 "AI Record",
                 url,

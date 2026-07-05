@@ -286,10 +286,8 @@
       btn.classList.toggle("recording", on);
       btn.textContent = on ? "● Stop" : "Start";
     }
-    // Lock device pickers while recording (but keep genuinely-disabled ones disabled).
-    for (const sel of [el.cInput, el.cOutputDev, el.xInput, el.xOutputDev]) {
-      if (sel && !sel.querySelector('option[value="__none__"]')) sel.disabled = on;
-    }
+    // Lock the device picker buttons while recording.
+    for (const dd of deviceDropdowns) dd.btn.disabled = on;
   }
 
   function refreshToggleEnabled() {
@@ -301,85 +299,148 @@
   }
 
   /* ============================ AUDIO DEVICES ============================ */
-  // Two device pickers (Input = mic, Output = speaker/system) replace the old
-  // Both/Mic/System select. Compact + expanded share the same selection via
-  // state.inputSel / state.outputSel (option values "off" | "id:<id>").
+  // Input (mic) + Output (speaker/system) are ICON BUTTONS that open a popover
+  // dropdown of devices. Compact + expanded share one selection each via
+  // state.inputSel / state.outputSel (values "off" | "id:<id>"). A green on-dot
+  // on the button proves the source is active; "Tắt" disables it.
+  const deviceDropdowns = [];  // { btn, pop, kind, dot }
+
   async function loadAudioDevices() {
     try {
       state.devices = await api("/api/audio-devices");
     } catch (_) {
       state.devices = { inputs: [], outputs: [], available: false };
     }
-    fillDeviceSelects();
+    fillDeviceDropdowns();
   }
 
-  function fillDeviceSelects() {
-    const d = state.devices || { inputs: [], outputs: [], available: false };
-    fillOneDeviceSelect(el.cInput, d.inputs, d.available, "input");
-    fillOneDeviceSelect(el.xInput, d.inputs, d.available, "input");
-    fillOneDeviceSelect(el.cOutputDev, d.outputs, d.available, "output");
-    fillOneDeviceSelect(el.xOutputDev, d.outputs, d.available, "output");
+  function currentSel(kind) { return kind === "input" ? state.inputSel : state.outputSel; }
+  function setSel(kind, val) { if (kind === "input") state.inputSel = val; else state.outputSel = val; }
+
+  // The system default (default:true) is the initial selection; fall back to the
+  // first device so a source is on by default. "off" only via explicit "Tắt".
+  function defaultDeviceVal(devices) {
+    const def = (devices || []).find((d) => d.default);
+    if (def) return "id:" + String(def.id);
+    return devices && devices.length ? "id:" + String(devices[0].id) : "off";
   }
 
-  function fillOneDeviceSelect(sel, devices, available, kind) {
-    if (!sel) return;
-    sel.textContent = "";
+  function mkCheckIcon() {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "15");
+    svg.setAttribute("height", "15");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.6");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const p = document.createElementNS(NS, "polyline");
+    p.setAttribute("points", "20 6 9 17 4 12");
+    svg.appendChild(p);
+    return svg;
+  }
+
+  function mkDeviceOpt(dd, val, name, isDefault) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "device-opt" + (currentSel(dd.kind) === val ? " selected" : "");
+    const check = document.createElement("span");
+    check.className = "device-check";
+    check.appendChild(mkCheckIcon());
+    const label = document.createElement("span");
+    label.className = "device-name";
+    label.textContent = isDefault ? `${name} (mặc định hệ thống)` : name;
+    row.append(check, label);
+    row.addEventListener("click", () => {
+      setSel(dd.kind, val);
+      fillDeviceDropdowns();   // re-render selection across both toolbars
+      closeAllPops();
+    });
+    return row;
+  }
+
+  function fillOneDevicePop(dd, devices, available) {
+    const pop = dd.pop;
+    pop.textContent = "";
     if (!available || !devices || !devices.length) {
-      const opt = document.createElement("option");
-      opt.value = "__none__";
-      opt.textContent = "Không tìm thấy thiết bị";
-      opt.disabled = true;
-      opt.selected = true;
-      sel.appendChild(opt);
-      sel.disabled = true;
+      const row = document.createElement("div");
+      row.className = "device-opt disabled";
+      const label = document.createElement("span");
+      label.className = "device-name";
+      label.textContent = "Không tìm thấy thiết bị";
+      row.appendChild(label);
+      pop.appendChild(row);
       return;
     }
-    sel.disabled = state.recording;
-
-    const off = document.createElement("option");
-    off.value = "off";
-    off.textContent = "Tắt";
-    sel.appendChild(off);
-
-    let defaultVal = null;
-    for (const dev of devices) {
-      const opt = document.createElement("option");
-      opt.value = "id:" + String(dev.id);
-      opt.textContent = dev.name || String(dev.id);
-      opt.title = dev.name || "";
-      sel.appendChild(opt);
-      if (dev.default && defaultVal == null) defaultVal = opt.value;
+    // Ensure a valid selection (default the first time we see devices).
+    const values = new Set(["off", ...devices.map((d) => "id:" + String(d.id))]);
+    if (!currentSel(dd.kind) || !values.has(currentSel(dd.kind))) {
+      setSel(dd.kind, defaultDeviceVal(devices));
     }
-
-    const shared = kind === "input" ? state.inputSel : state.outputSel;
-    let val = shared || defaultVal || "off";
-    if (![...sel.options].some((o) => o.value === val)) val = defaultVal || "off";
-    sel.value = val;
-    if (kind === "input") state.inputSel = val; else state.outputSel = val;
+    // System default listed first.
+    const ordered = devices.slice().sort((a, b) => (b.default ? 1 : 0) - (a.default ? 1 : 0));
+    for (const dev of ordered) {
+      pop.appendChild(mkDeviceOpt(dd, "id:" + String(dev.id), dev.name || String(dev.id), !!dev.default));
+    }
+    // "Tắt" disables this source.
+    pop.appendChild(mkDeviceOpt(dd, "off", "Tắt", false));
   }
 
-  function syncDeviceSelects(kind, val) {
-    if (kind === "input") {
-      state.inputSel = val;
-      for (const sel of [el.cInput, el.xInput]) if (sel && sel.value !== val && [...sel.options].some((o) => o.value === val)) sel.value = val;
-    } else {
-      state.outputSel = val;
-      for (const sel of [el.cOutputDev, el.xOutputDev]) if (sel && sel.value !== val && [...sel.options].some((o) => o.value === val)) sel.value = val;
+  function fillDeviceDropdowns() {
+    const d = state.devices || { inputs: [], outputs: [], available: false };
+    for (const dd of deviceDropdowns) {
+      const list = dd.kind === "input" ? d.inputs : d.outputs;
+      fillOneDevicePop(dd, list, d.available);
+    }
+    updateDeviceButtons();
+    // Re-clamp any open device popover whose contents just changed size.
+    for (const dd of deviceDropdowns) if (!dd.pop.hidden) clampPopover(dd.pop);
+  }
+
+  function updateDeviceButtons() {
+    for (const dd of deviceDropdowns) {
+      const sel = currentSel(dd.kind);
+      const on = !!sel && sel !== "off";
+      if (dd.dot) dd.dot.hidden = !on;
+      dd.btn.classList.toggle("source-off", !on);
+      const label = dd.kind === "input" ? "Micro" : "Loa / hệ thống";
+      dd.btn.title = on ? `${label}: bật` : `${label}: tắt`;
     }
   }
 
-  function bindDeviceSelect(sel, kind) {
-    if (!sel) return;
-    sel.addEventListener("change", () => syncDeviceSelects(kind, sel.value));
-    // Refresh the device list when the user reaches for the picker.
-    sel.addEventListener("focus", () => { loadAudioDevices(); });
+  function registerDeviceDropdown(btnId, kind) {
+    const btn = $(btnId);
+    if (!btn) return;
+    const wrap = btn.parentNode;  // .device-dd (relative)
+    const pop = document.createElement("div");
+    pop.className = "device-pop";
+    pop.hidden = true;
+    wrap.appendChild(pop);
+    const dd = { btn, pop, kind, dot: btn.querySelector(".on-dot") };
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = pop.hidden;
+      closeAllPops();
+      if (willOpen) {
+        fillDeviceDropdowns();      // render from current cache immediately
+        pop.hidden = false;
+        btn.setAttribute("aria-expanded", "true");
+        clampPopover(pop);
+        loadAudioDevices();         // then refresh the list from the backend
+      }
+    });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    deviceDropdowns.push(dd);
   }
-  bindDeviceSelect(el.cInput, "input");
-  bindDeviceSelect(el.xInput, "input");
-  bindDeviceSelect(el.cOutputDev, "output");
-  bindDeviceSelect(el.xOutputDev, "output");
+  registerDeviceDropdown("c-input", "input");
+  registerDeviceDropdown("x-input", "input");
+  registerDeviceDropdown("c-output-dev", "output");
+  registerDeviceDropdown("x-output-dev", "output");
 
-  // Resolve an option value ("off" | "id:<id>") back to the backend device id.
+  // Resolve a selection value ("off" | "id:<id>") back to the backend device id.
   function resolveDeviceId(val, list) {
     if (!val || val === "off" || val === "__none__") return null;
     const raw = val.startsWith("id:") ? val.slice(3) : val;
@@ -528,6 +589,7 @@
         refreshTranslatePops();
         pop.hidden = false;
         btn.setAttribute("aria-expanded", "true");
+        clampPopover(pop);
       }
     });
     pop.addEventListener("click", (e) => e.stopPropagation());
@@ -566,8 +628,12 @@
     refreshOutputDropdowns();
   }
 
-  // Close every popover in the toolbar (output formats, translate, copy).
+  // Close every popover in the toolbar (device, output formats, translate, copy).
   function closeAllPops() {
+    for (const d of deviceDropdowns) {
+      d.pop.hidden = true;
+      d.btn.setAttribute("aria-expanded", "false");
+    }
     for (const d of outputDropdowns) {
       d.pop.hidden = true;
       d.btn.setAttribute("aria-expanded", "false");
@@ -579,6 +645,32 @@
     if (copyDropdown) {
       copyDropdown.pop.hidden = true;
       copyDropdown.btn.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  // Keep a just-opened toolbar popover fully inside the OS window: content cannot
+  // overflow the native window edge, so shift it left if its right edge would
+  // exceed the viewport, and cap its height if it would run past the bottom.
+  const POP_MARGIN = 8;
+  function clampPopover(pop) {
+    if (!pop || pop.hidden) return;
+    pop.style.transform = "none";
+    pop.style.maxHeight = "";
+    pop.style.overflowY = "";
+    // Horizontal: shift left to fit, but never past the left margin.
+    const rect = pop.getBoundingClientRect();
+    let shift = 0;
+    const rightOver = rect.right - (window.innerWidth - POP_MARGIN);
+    if (rightOver > 0) shift = rightOver;
+    if (rect.left - shift < POP_MARGIN) shift = Math.max(0, rect.left - POP_MARGIN);
+    if (shift > 0) pop.style.transform = `translateX(${-shift}px)`;
+    // Vertical: if it would spill past the bottom, cap height + scroll inside.
+    const rect2 = pop.getBoundingClientRect();
+    const bottomOver = rect2.bottom - (window.innerHeight - POP_MARGIN);
+    if (bottomOver > 0) {
+      const avail = window.innerHeight - rect2.top - POP_MARGIN;
+      pop.style.maxHeight = Math.max(120, avail) + "px";
+      pop.style.overflowY = "auto";
     }
   }
 
@@ -620,7 +712,7 @@
       e.stopPropagation();
       const willOpen = pop.hidden;
       closeAllPops();
-      if (willOpen) { refreshOutputDropdowns(); pop.hidden = false; btn.setAttribute("aria-expanded", "true"); }
+      if (willOpen) { refreshOutputDropdowns(); pop.hidden = false; btn.setAttribute("aria-expanded", "true"); clampPopover(pop); }
     });
     pop.addEventListener("click", (e) => e.stopPropagation());
     outputDropdowns.push({ btn, pop, checks, badge });
@@ -823,13 +915,17 @@
   }
 
   /* ============================ COMPACT RECENT LINES ============================ */
+  // Render a generous window of the newest utterances; the .recent container is a
+  // bottom-anchored flex column with overflow hidden, so it shows exactly as many
+  // lines as fit and clips the oldest at the top. Dragging the window taller shows
+  // MORE lines with no extra work here.
+  const RECENT_MAX = 60;
   function recentEntries() {
-    // Last 3 utterances by seq.
     const seqs = [...state.utterances.keys()].sort((a, b) => a - b);
-    return seqs.slice(-3).map((s) => state.utterances.get(s).record);
+    return seqs.slice(-RECENT_MAX).map((s) => state.utterances.get(s).record);
   }
   function isRecentSeq(seq) {
-    const seqs = [...state.utterances.keys()].sort((a, b) => a - b).slice(-3);
+    const seqs = [...state.utterances.keys()].sort((a, b) => a - b).slice(-RECENT_MAX);
     return seqs.includes(seq);
   }
   function renderRecent() {
@@ -1065,7 +1161,7 @@
       e.stopPropagation();
       const willOpen = pop.hidden;
       closeAllPops();
-      if (willOpen) { pop.hidden = false; btn.setAttribute("aria-expanded", "true"); }
+      if (willOpen) { pop.hidden = false; btn.setAttribute("aria-expanded", "true"); clampPopover(pop); }
     });
     pop.addEventListener("click", (e) => e.stopPropagation());
     copyDropdown = { btn, pop };

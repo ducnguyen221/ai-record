@@ -141,18 +141,6 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 }
 .toggle-btn:disabled { opacity: .5; cursor: not-allowed; }
 
-.source-select {
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  color: var(--text);
-  border-radius: var(--radius-sm);
-  height: 32px;
-  padding: 0 8px;
-  font-size: 12.5px;
-  min-width: 132px;
-}
-.source-select:disabled { opacity: .55; }
-
 .icon-btn {
   border: 1px solid transparent;
   background: transparent;
@@ -207,19 +195,71 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 /* uniform control height across the compact toolbar */
 .compact-toolbar .rec-btn,
 .compact-toolbar .toggle-btn,
-.compact-toolbar .source-select,
 .compact-toolbar .icon-btn { height: 32px; }
 .compact-toolbar .icon-btn { width: 32px; }
 .compact-toolbar .rec-btn { min-width: 68px; padding: 0 12px; }
 /* Logo matches the 32px control height, in both views (change #1). */
 .app-logo { width: 32px; height: 32px; border-radius: 7px; flex: none; object-fit: contain; user-select: none; }
 
-/* Input/Output device pickers + the dimmed screen-record button (change #4). */
-.device-group { display: flex; align-items: center; gap: 6px; flex: none; }
-.device-select { min-width: 96px; max-width: 150px; }
-.compact-toolbar .device-select { min-width: 60px; max-width: 86px; }
+/* Input (mic) / Output (speaker) icon buttons + the dimmed screen-record button. */
+.device-group { display: flex; align-items: center; gap: 4px; flex: none; }
 .screen-btn:disabled { opacity: .4; cursor: not-allowed; }
 .icon-btn svg { pointer-events: none; }
+
+/* Device picker: icon button in a relative wrapper that anchors its popover. */
+.device-dd { position: relative; display: inline-flex; align-items: center; flex: none; }
+.device-btn { position: relative; }
+.device-btn[aria-expanded="true"] { color: var(--accent); background: var(--accent-weak); }
+/* Dim the icon when the source is "Tắt" (off); full strength when a device is on. */
+.device-btn.source-off { color: var(--text-faint); }
+.device-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Green corner dot proves the source is active (a device is selected). */
+.on-dot {
+  position: absolute; top: 3px; right: 3px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 1.5px var(--surface);
+}
+
+/* Device dropdown popover: full device names, currently-selected one checked. */
+.device-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 240px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.device-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.device-opt:hover { background: var(--surface-2); }
+.device-opt.selected { color: var(--accent); font-weight: 600; }
+.device-opt.disabled { color: var(--text-muted); cursor: default; }
+.device-opt.disabled:hover { background: none; }
+.device-check { flex: none; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; opacity: 0; }
+.device-opt.selected .device-check { opacity: 1; }
+.device-name { flex: 1 1 auto; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 
 /* ============================ TOOLBAR ICON DROPDOWNS ============================ */
 .output-dd, .translate-dd { position: relative; display: inline-flex; align-items: center; flex: none; }
@@ -258,12 +298,14 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 }
 .tp-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer; }
 .tp-toggle input { flex: none; cursor: pointer; }
-.tp-langs { display: flex; align-items: flex-end; gap: 8px; }
-.tp-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: 0; }
+.tp-langs { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.tp-field { display: flex; flex-direction: column; gap: 4px; }
 .tp-field small { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); font-weight: 650; }
+/* width:auto lets the select grow to show the full label (e.g. "Vietnamese (vi)"). */
 .tp-select {
   border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
-  border-radius: var(--radius-sm); height: 32px; padding: 0 6px; font-size: 12.5px; width: 100%;
+  border-radius: var(--radius-sm); height: 32px; padding: 0 8px; font-size: 12.5px;
+  width: auto; min-width: 132px; max-width: 220px;
 }
 .tp-arrow { color: var(--text-faint); padding-bottom: 7px; }
 
@@ -320,9 +362,14 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   100% { box-shadow: 0 0 0 0 rgba(224,68,59,0); }
 }
 
-.recent { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+/* Bottom-anchored: newest line sits at the bottom; when more lines exist than
+   fit, the oldest overflow the top and are clipped (no scrollbar). A taller
+   window simply reveals more lines. */
+.recent { display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; overflow: hidden; }
 .recent-empty { color: var(--text-faint); font-size: 12.5px; }
-.recent .r-line { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* flex:none so lines keep their natural height (never shrink); overflow of the
+   bottom-anchored column then clips the oldest lines at the top. */
+.recent .r-line { flex: none; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent .r-text { color: var(--text); }
 .recent .r-tr { color: var(--text-muted); font-size: 12px; }
 
