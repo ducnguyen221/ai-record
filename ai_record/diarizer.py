@@ -12,6 +12,7 @@ whole module is import-safe and testable on CPU with none of them installed.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,9 @@ SAMPLE_RATE = 16000
 UNKNOWN = "Speaker ?"
 _MARGIN_SCALE = 0.2          # cosine-margin → confidence scaling (SPEC.md §5.5)
 _UNTRUSTED_CONF_CAP = 0.49   # confidence cap while a centroid is not yet trusted
+_OVERLAP_MIN_RATIO = 0.3     # tier-2: secondary speaker share to flag overlap (SPEC.md §5.5)
+# Labels the realtime clusterer must never overwrite/merge into (reserved).
+_RESERVED_LABELS = frozenset({"You", "UNKNOWN", UNKNOWN})
 
 
 # --------------------------------------------------------------------------- #
@@ -60,6 +64,10 @@ class Embedder(Protocol):
 
 class HfTokenRequired(RuntimeError):
     """Raised when tier-2 diarization needs an HF token that is not configured."""
+
+
+class ActiveSessionError(RuntimeError):
+    """Raised when tier-2 re-diarization is attempted on a non-finalized session."""
 
 
 # --------------------------------------------------------------------------- #
@@ -163,9 +171,32 @@ class RealtimeDiarizer:
         self._n_created = 0
 
     def rename(self, old_label: str, new_label: str) -> None:
-        """Rename a speaker label; future matches keep the new name (SPEC.md §5.5)."""
-        if old_label in self.centroids and old_label != new_label:
-            self.centroids[new_label] = self.centroids.pop(old_label)
+        """Rename a speaker label; future matches keep the new name (SPEC.md §5.5).
+
+        On a label collision, MERGE the two centroids (weighted by accumulated speech)
+        instead of clobbering the target — clobbering would discard a speaker's centroid
+        and mis-cluster future matches (review I6). Reserved labels are never targets.
+        """
+        if old_label == new_label or old_label not in self.centroids:
+            return
+        if new_label in _RESERVED_LABELS:
+            log.warning("refusing to rename %r to reserved label %r", old_label, new_label)
+            return
+        src = self.centroids.pop(old_label)
+        existing = self.centroids.get(new_label)
+        self.centroids[new_label] = self._merge_centroids(existing, src) if existing else src
+
+    @staticmethod
+    def _merge_centroids(a: "_Centroid", b: "_Centroid") -> "_Centroid":
+        wa = max(a.accum_sec, 1e-6)
+        wb = max(b.accum_sec, 1e-6)
+        mean = _l2_normalize(a.mean * wa + b.mean * wb)
+        return _Centroid(
+            mean=mean,
+            accum_sec=a.accum_sec + b.accum_sec,
+            count=a.count + b.count,
+            _trusted=a.trusted or b.trusted,
+        )
 
     # ------------------------------------------------------------------ #
     def label(self, utt, *, is_overlap: bool = False) -> Assignment:
@@ -178,35 +209,36 @@ class RealtimeDiarizer:
 
         # Short OR overlap → "Speaker ?"; never create/update a centroid.
         if too_short or is_overlap:
-            return Assignment(speaker=UNKNOWN, confidence=0.0, is_overlap=is_overlap)
+            return Assignment(speaker=UNKNOWN, confidence=None, is_overlap=is_overlap)
 
         try:
             emb = _l2_normalize(self._ensure_embedder().embed(utt.pcm))
         except Exception as exc:  # pragma: no cover - embedder failure
             log.warning("embedder failed: %s", exc)
-            return Assignment(speaker=UNKNOWN, confidence=0.0)
+            return Assignment(speaker=UNKNOWN, confidence=None)
 
         threshold = self._threshold()
         best_label, best_sim, second_sim = self._nearest(emb)
 
         if best_label is not None and best_sim >= threshold:
-            confidence = self._confidence(best_sim, second_sim, threshold)
+            # Anti-drift (SPEC.md §5.5 step 3): gate the mean-update, trust accrual and
+            # promotion on the RAW margin confidence — a shaky (below-gate) match leaves
+            # the centroid UNCHANGED (no mean move, no accum_sec, no promotion). Only the
+            # RETURNED/persisted value is capped while the centroid is still untrusted.
+            raw_conf = self._confidence(best_sim, second_sim, threshold)
             cen = self.centroids[best_label]
+            if raw_conf >= self.settings.centroid_update_min_conf:
+                self._update_centroid(best_label, emb, utt.duration)
+            confidence = raw_conf
             if not cen.trusted:
                 confidence = min(confidence, _UNTRUSTED_CONF_CAP)
-            # Only update the centroid on a confident, non-overlap, long-enough hit.
-            if confidence >= self.settings.centroid_update_min_conf:
-                self._update_centroid(best_label, emb, utt.duration)
-            else:
-                cen.accum_sec += utt.duration  # still accrue trust, don't move the mean
-                cen._trusted = cen.accum_sec >= self.settings.min_speaker_speech_s
             return Assignment(speaker=best_label, confidence=confidence)
 
         # No match ≥ threshold → new speaker, unless we've hit the cap.
         if self._n_created >= self.settings.max_speakers:
             log.warning("max_speakers (%d) reached — labelling utterance 'Speaker ?'",
                         self.settings.max_speakers)
-            return Assignment(speaker=UNKNOWN, confidence=0.0, forced_overflow=True)
+            return Assignment(speaker=UNKNOWN, confidence=None, forced_overflow=True)
 
         label = self._new_speaker(emb, utt.duration)
         # A brand-new centroid is untrusted until it accumulates enough speech.
@@ -273,12 +305,29 @@ class OfflineDiarizer:
             return False, "HF token required"
         return True, ""
 
-    def rediarize(self, session_dir: str) -> list[SpeakerSpan]:
-        """Run pyannote on ``audio_them.wav`` and return speaker spans (sample time)."""
+    def rediarize(self, session_dir: str, *, allow_active: bool = False) -> list[SpeakerSpan]:
+        """Run pyannote on ``audio_them.wav`` and return speaker spans (sample time).
+
+        Requires a FINALIZED snapshot unless ``allow_active`` is set: a session still
+        being written (``meta.ended_at is None``) is rejected at the module level, not
+        only by the REST 409, closing the check-vs-flush race (review nit).
+        """
         ok, why = self.available()
         if not ok:
             raise HfTokenRequired(why)
-        wav = Path(session_dir) / "audio_them.wav"
+        sdir = Path(session_dir)
+        if not allow_active:
+            meta_path = sdir / "meta.json"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:  # pragma: no cover - corrupt meta
+                    meta = {}
+                if meta.get("ended_at") is None:
+                    raise ActiveSessionError(
+                        "session not finalized — re-diarize needs a finalized snapshot"
+                    )
+        wav = sdir / "audio_them.wav"
         if not wav.exists():
             raise FileNotFoundError(f"missing {wav} — audio not persisted / not finalized")
         token = self.secrets.get("hf_token")
@@ -309,22 +358,37 @@ class OfflineDiarizer:
         return spans
 
 
-def relabel_them_utterances(records, spans: list[SpeakerSpan]) -> dict[int, str]:
+def _alpha_label(n: int) -> str:
+    """0→A, 25→Z, 26→AA, 27→AB, … (Excel-style; supports >26 speakers, review nit)."""
+    s = ""
+    n += 1
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(ord("A") + r) + s
+    return s
+
+
+def relabel_them_utterances(
+    records, spans: list[SpeakerSpan]
+) -> dict[int, tuple[str, str | None, bool]]:
     """Overlap-weighted majority relabel of ``them`` utterances (SPEC.md §5.5, §4.8).
 
     Compares each ``them`` utterance's ``[audio_start_sample, audio_end_sample]``
     against the pyannote spans on the same sample timeline, assigns the speaker with
     the greatest total overlap, and maps raw pyannote ids to stable ``Speaker A/B/…``
-    in order of first appearance. Returns ``{seq: label}`` for changed utterances.
+    in order of first appearance. Preserves a secondary candidate + an overlap flag
+    (tier-2 requirement, review I5): returns ``{seq: (primary, alt, is_overlap)}`` for
+    changed utterances. ``alt`` is the runner-up speaker (or ``None``) and
+    ``is_overlap`` is set when the runner-up holds a substantial share of the span.
     """
     stable: dict[str, str] = {}
 
     def _stable_label(raw: str) -> str:
         if raw not in stable:
-            stable[raw] = f"Speaker {chr(ord('A') + len(stable))}"
+            stable[raw] = f"Speaker {_alpha_label(len(stable))}"
         return stable[raw]
 
-    out: dict[int, str] = {}
+    out: dict[int, tuple[str, str | None, bool]] = {}
     for rec in records:
         if rec.source != "them":
             continue
@@ -340,8 +404,18 @@ def relabel_them_utterances(records, spans: list[SpeakerSpan]) -> dict[int, str]
                 totals[span.speaker] = totals.get(span.speaker, 0) + (hi - lo)
         if not totals:
             continue
-        winner = max(totals, key=totals.get)
-        out[rec.seq] = _stable_label(winner)
+        # Stable sort by overlap desc; ties keep first-appearance (dict/span order).
+        ordered = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+        winner_raw, winner_amt = ordered[0]
+        primary = _stable_label(winner_raw)
+        alt: str | None = None
+        is_overlap = False
+        if len(ordered) > 1:
+            second_raw, second_amt = ordered[1]
+            if second_amt >= _OVERLAP_MIN_RATIO * winner_amt:
+                alt = _stable_label(second_raw)
+                is_overlap = True
+        out[rec.seq] = (primary, alt, is_overlap)
     return out
 
 

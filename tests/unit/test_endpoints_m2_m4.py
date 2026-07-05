@@ -99,7 +99,29 @@ def test_summarize_unavailable_returns_error(client, monkeypatch):
 
     monkeypatch.setattr(sm, "make_provider", lambda name, settings, secrets=None: Down())
     r = client.post(f"/api/sessions/{sid}/summarize", headers=H, json={})
-    assert r.status_code == 200
+    # Provider unavailable → HTTP 503 with a reason (was a misleading 200 {error}; I2).
+    assert r.status_code == 503
+    assert "error" in r.json()
+
+
+def test_summarize_provider_error_returns_502(client, monkeypatch):
+    """A provider that RAN but failed (SummarizerError) → 502, not an unhandled 500 (I1)."""
+    store = client.ai_store
+    sid = store.create("sum3").session_id
+    store.append_utterance(_rec(store, sid, text="a"))
+
+    class Boom:
+        name = "boom"
+
+        def available(self):
+            return True, ""
+
+        def summarize(self, *a):
+            raise sm.SummarizerError("claude exited 1: boom")
+
+    monkeypatch.setattr(sm, "make_provider", lambda name, settings, secrets=None: Boom())
+    r = client.post(f"/api/sessions/{sid}/summarize", headers=H, json={"scenario": "minutes"})
+    assert r.status_code == 502
     assert "error" in r.json()
 
 

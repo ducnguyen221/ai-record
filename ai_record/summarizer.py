@@ -78,12 +78,19 @@ class Summarizer(Protocol):
 # --------------------------------------------------------------------------- #
 # Payload assembly + hardened subprocess
 # --------------------------------------------------------------------------- #
+def _neutralize_delimiters(transcript_text: str) -> str:
+    """Strip any literal BEGIN/END markers from the DATA so a transcript line cannot
+    break out of the delimited block (review nit: delimiter breakout)."""
+    return (transcript_text or "").replace(_BEGIN, "").replace(_END, "")
+
+
 def build_payload(prompt: str, transcript_text: str) -> str:
     """Assemble the hardened stdin payload: system instruction + task + delimited data."""
+    safe = _neutralize_delimiters(transcript_text)
     return (
         f"{_SYSTEM_INSTRUCTION}\n\n"
         f"TASK:\n{prompt}\n\n"
-        f"{_BEGIN}\n{transcript_text}\n{_END}\n"
+        f"{_BEGIN}\n{safe}\n{_END}\n"
     )
 
 
@@ -139,7 +146,15 @@ class ClaudeCliSummarizer:
 
     def summarize(self, prompt: str, transcript_text: str, meta: dict) -> str:
         payload = build_payload(prompt, transcript_text)
-        cmd = ["claude", "-p", "--permission-mode", "deny", "--allowedTools", ""]
+        # Restrictive, VALID invocation: `plan` mode never executes/edits, an empty
+        # allow-list plus an explicit deny-list means no tool can run. (`deny` was an
+        # INVALID --permission-mode value → non-zero exit → 500; see review C1.)
+        cmd = [
+            "claude", "-p",
+            "--permission-mode", "plan",
+            "--allowedTools", "",
+            "--disallowedTools", "Bash Edit Write Read WebFetch WebSearch",
+        ]
         return _run_cli(cmd, payload, self.settings.summary_timeout_s)
 
 
@@ -340,6 +355,18 @@ def build_summary(
     transcript = assemble_transcript(records, use_translation=use_translation)
 
     impl = provider_impl or make_provider(provider, settings, secrets)
+
+    # Long `reformat`: the map-reduce path always rewrites text → the integrity guard
+    # trips → we fall back deterministically every time. Skip the wasted LLM call and
+    # go straight to the deterministic lossless reformatter (review nit). No provider
+    # is needed for this path, so we do not require availability.
+    if scenario == "reformat" and len(transcript) > settings.summary_max_chars:
+        log.info("reformat transcript (%d chars) exceeds summary_max_chars → deterministic reformat",
+                 len(transcript))
+        markdown = deterministic_reformat(records, meta)
+        return SummaryResult(markdown=markdown, scenario=scenario, provider=impl.name,
+                             reformat_fallback=True)
+
     ok, why = impl.available()
     if not ok:
         raise SummarizerUnavailable(why)

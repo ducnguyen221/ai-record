@@ -280,7 +280,7 @@ def create_app(state: AppState) -> FastAPI:
 
     @app.post("/api/sessions/{sid}/summarize", dependencies=dep)
     async def summarize(sid: str, body: dict | None = None) -> dict:
-        from .summarizer import SummarizerUnavailable, build_summary
+        from .summarizer import SummarizerError, SummarizerUnavailable, build_summary
 
         body = body or {}
         scenario = body.get("scenario") or "reformat"
@@ -289,7 +289,11 @@ def create_app(state: AppState) -> FastAPI:
         try:
             result = build_summary(data, scenario, provider, state.settings, state.secrets)
         except SummarizerUnavailable as exc:
-            return {"error": str(exc)}
+            # Provider not installed / no key: 503, not a 200-with-{error} (review I2).
+            return JSONResponse(status_code=503, content={"error": str(exc)})
+        except SummarizerError as exc:
+            # Provider ran but failed (non-zero exit / timeout / empty): 502, not 500 (I1).
+            return JSONResponse(status_code=502, content={"error": str(exc)})
         except ValueError as exc:  # unknown scenario
             raise HTTPException(status_code=422, detail=str(exc))
         state.store.write_summary(sid, result.markdown, scenario=result.scenario, provider=result.provider)

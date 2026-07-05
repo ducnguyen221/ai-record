@@ -1,5 +1,6 @@
 import contextlib
 import json
+import threading
 import wave
 
 import numpy as np
@@ -65,6 +66,50 @@ def test_patch_utterance_visible_on_read(store: SessionStore):
     data = store.load_session(sid)
     assert data.utterances[0].translation == "dịch"
     assert data.utterances[0].translation_provider == "nllb"
+
+
+def test_patch_is_append_only_and_consolidated_on_finalize(store: SessionStore):
+    """I4: patch_utterance appends to patches.jsonl (no O(N) transcript rewrite), is
+    reflected on reads, and is consolidated into transcript.jsonl at finalize()."""
+    sid = store.create("hot").session_id
+    store.append_utterance(_rec(store, sid, text="a"))
+    store.append_utterance(_rec(store, sid, text="b", start=2.0))
+
+    store.patch_utterance(sid, 1, {"translation": "VI-a", "translation_provider": "nllb"})
+    # append-only sidecar exists; the canonical transcript is NOT rewritten yet.
+    assert (store._dir(sid) / "patches.jsonl").exists()
+    assert "VI-a" not in store._jsonl(sid).read_text(encoding="utf-8")
+
+    # reflected on both read paths (merge on read)
+    data = store.load_session(sid)
+    assert next(u for u in data.utterances if u.seq == 1).translation == "VI-a"
+    since = store.utterances_since(sid, 0)
+    assert next(u for u in since if u.seq == 1).translation == "VI-a"
+
+    store.finalize(sid)
+    # consolidated: sidecar removed, value now in the canonical transcript.
+    assert not (store._dir(sid) / "patches.jsonl").exists()
+    assert "VI-a" in store._jsonl(sid).read_text(encoding="utf-8")
+    data2 = store.load_session(sid)
+    assert next(u for u in data2.utterances if u.seq == 1).translation == "VI-a"
+
+
+def test_patch_does_not_block_append_lock(store: SessionStore):
+    """I4: patch_utterance must not need the STT transcript write lock — proven by
+    patching successfully while that lock is held by another thread."""
+    sid = store.create("noblock").session_id
+    store.append_utterance(_rec(store, sid, text="a"))
+    done = threading.Event()
+
+    def _do_patch():
+        store.patch_utterance(sid, 1, {"translation": "x"})
+        done.set()
+
+    with store._lock(sid).write():        # hold the transcript RWLock as STT would
+        t = threading.Thread(target=_do_patch)
+        t.start()
+        assert done.wait(2.0), "patch_utterance blocked on the transcript write lock"
+    t.join(2.0)
 
 
 def test_utterances_since(store: SessionStore):

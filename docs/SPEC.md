@@ -705,7 +705,7 @@ Note: `ended_at` is written only on clean finalize; its absence is the incomplet
 **WebSocket** `GET /ws?token=…`:
 - Server → client message types:
   - `{"type":"utterance","record":<UtteranceRecord>}` — STT-first, shown immediately.
-  - `{"type":"patch","seq":N,"fields":{…}}` — late translation/speaker/confidence updates (§4.5).
+  - `{"type":"patch","seq":N,"translation"?:str,"translation_provider"?:str,"speaker"?:str,"diarization_confidence"?:float}` — FLAT late translation/speaker/confidence updates, applied by `seq` (§4.5, addendum §E4). `translation` and `speaker` may arrive in separate patches.
   - `{"type":"status", "recording":bool, "sources":{…health…}, "preset":str, "effective_model":str, "ladder_step":int, "degraded_states":[…], "note":str}` — coalescible.
   - `{"type":"rename","old":str,"new":str}`.
   - `{"type":"rediarize","state":"started|progress|done|error","detail":…}`.

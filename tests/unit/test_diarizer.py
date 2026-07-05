@@ -117,3 +117,74 @@ def test_confidence_populated_for_trusted_centroid():
     a = d.label(_utt(duration=2.0))
     assert a.confidence is not None
     assert a.confidence > 0.5            # trusted → not capped low
+
+
+def test_unknown_and_overflow_confidence_is_none():
+    # short / overlap / overflow → confidence None (not a misleading 0.0), review nit.
+    assert _diar([[1, 0, 0]]).label(_utt(duration=0.5)).confidence is None  # short
+    d = _diar([[1, 0, 0]], min_speaker_speech_s=1.0)
+    d.label(_utt(duration=2.0))
+    assert d.label(_utt(duration=2.0), is_overlap=True).confidence is None  # overlap
+    d2 = _diar([[1, 0, 0], [0, 1, 0]], max_speakers=1)
+    d2.label(_utt())
+    assert d2.label(_utt()).confidence is None                              # overflow
+
+
+def test_shaky_match_leaves_centroid_unchanged_and_does_not_promote():
+    """C3: a below-gate (shaky) match must NOT move the mean, accrue accum_sec, or promote
+    to trusted; the returned confidence is capped while the centroid is untrusted."""
+    v0 = [1, 0, 0]
+    # cos 0.75 ≥ threshold 0.70 (matches) but raw margin conf = (0.75-0.70)/0.2 = 0.25 < 0.6.
+    shaky = [0.75, math.sqrt(1 - 0.75 ** 2), 0.0]
+    d = _diar([v0, shaky, shaky], min_speaker_speech_s=100.0)  # never crosses trust
+    d.label(_utt(duration=0.9))                                # Speaker 1, untrusted
+    cen = d.centroids["Speaker 1"]
+    mean_before = cen.mean.copy()
+    accum_before, count_before = cen.accum_sec, cen.count
+
+    a = d.label(_utt(duration=2.0))                            # shaky match
+    assert a.speaker == "Speaker 1"
+    assert cen.count == count_before                           # no update
+    assert cen.accum_sec == accum_before                      # no trust accrual
+    assert np.allclose(cen.mean, mean_before)                 # mean unchanged
+    assert not cen.trusted                                     # not promoted
+    # untrusted cap on the RETURNED value.
+    assert a.confidence is not None and a.confidence <= 0.49
+
+    d.label(_utt(duration=2.0))                               # another shaky hit
+    assert not cen.trusted                                     # still not promoted
+
+
+def test_ecapa_threshold_branch_is_used():
+    """C3 companion: the ECAPA threshold (0.75) gates matching, not Resemblyzer's 0.70."""
+    below = [0.72, math.sqrt(1 - 0.72 ** 2), 0.0]   # 0.72 < 0.75 → new speaker
+    s = Settings(hardware_preset="cpu", diarization_embedder="ecapa")
+    d = RealtimeDiarizer(s, resolve_preset(s), embedder=FakeEmbedder([[1, 0, 0], below]))
+    assert d.embedder_name == "ecapa"
+    assert d._threshold() == s.sim_threshold_ecapa
+    d.label(_utt())
+    assert d.label(_utt()).speaker == "Speaker 2"
+
+    above = [0.80, math.sqrt(1 - 0.80 ** 2), 0.0]   # 0.80 ≥ 0.75 → same speaker
+    d2 = RealtimeDiarizer(s, resolve_preset(s), embedder=FakeEmbedder([[1, 0, 0], above]))
+    d2.label(_utt())
+    assert d2.label(_utt()).speaker == "Speaker 1"
+
+
+def test_rename_merges_on_collision_and_guards_reserved():
+    """I6: renaming into an existing label MERGES (no clobber); reserved labels rejected."""
+    # Two distinct speakers, then rename Speaker 2 → Speaker 1 collides → merge, not clobber.
+    d = _diar([[1, 0, 0], [0, 1, 0]], min_speaker_speech_s=0.5)
+    d.label(_utt(duration=1.0))   # Speaker 1
+    d.label(_utt(duration=1.0))   # Speaker 2
+    c1_accum = d.centroids["Speaker 1"].accum_sec
+    c2_accum = d.centroids["Speaker 2"].accum_sec
+    d.rename("Speaker 2", "Speaker 1")
+    assert "Speaker 2" not in d.centroids
+    assert "Speaker 1" in d.centroids           # not clobbered
+    assert d.centroids["Speaker 1"].accum_sec == c1_accum + c2_accum  # merged weight
+
+    # Reserved target is refused (centroid stays put).
+    d.rename("Speaker 1", "You")
+    assert "Speaker 1" in d.centroids
+    assert "You" not in d.centroids

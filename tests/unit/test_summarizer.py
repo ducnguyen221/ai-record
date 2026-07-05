@@ -7,8 +7,11 @@ import pytest
 
 import ai_record.summarizer as sm
 from ai_record.config import Settings
-from ai_record.summarizer import ClaudeCliSummarizer, build_summary
+from ai_record.summarizer import ClaudeCliSummarizer, CodexCliSummarizer, build_summary
 from tests.unit.test_store import _rec
+
+# The full set of VALID `claude --permission-mode` values (from the installed CLI).
+_VALID_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
 
 
 class FakeProvider:
@@ -78,6 +81,27 @@ def test_reformat_falls_back_when_text_altered(store):
     assert "second line" in res.markdown
 
 
+def test_long_reformat_bypasses_llm_and_is_lossless(store):
+    """Over summary_max_chars, `reformat` goes straight to the deterministic reformatter
+    (no wasted LLM call) and preserves every utterance verbatim (review nit)."""
+    store.settings = store.settings.update({"summary_max_chars": 40})
+    data = _session(store, ["first utterance here", "second utterance here"])
+
+    class ExplodingProvider:
+        name = "boom"
+
+        def available(self):  # pragma: no cover - must never be consulted
+            raise AssertionError("provider availability must not be checked")
+
+        def summarize(self, *a):  # pragma: no cover - must never be called
+            raise AssertionError("LLM must not be called for long reformat")
+
+    res = build_summary(data, "reformat", "claude_cli", store.settings, provider_impl=ExplodingProvider())
+    assert res.reformat_fallback is True
+    assert "first utterance here" in res.markdown
+    assert "second utterance here" in res.markdown
+
+
 def test_reformat_deterministic_needs_no_provider_call_content(store):
     """Even a provider that returns junk yields a lossless deterministic result."""
     data = _session(store, ["one two three"])
@@ -90,9 +114,7 @@ def test_reformat_deterministic_needs_no_provider_call_content(store):
 # --------------------------------------------------------------------------- #
 # CLI hardening (SPEC.md §5.6)
 # --------------------------------------------------------------------------- #
-def test_claude_cli_hardening(monkeypatch):
-    captured: dict = {}
-
+def _fake_run(captured):
     class _Result:
         returncode = 0
         stdout = "SUMMARY OK"
@@ -103,24 +125,66 @@ def test_claude_cli_hardening(monkeypatch):
         captured["kwargs"] = kwargs
         return _Result()
 
-    monkeypatch.setattr(sm.subprocess, "run", fake_run)
+    return fake_run
+
+
+def test_claude_cli_argv_is_valid_and_stdin_only(monkeypatch):
+    """C1 regression: the constructed claude argv must use ONLY valid flags (no invalid
+    `--permission-mode deny`), pass the transcript via STDIN (never argv), shell=False."""
+    captured: dict = {}
+    monkeypatch.setattr(sm.subprocess, "run", _fake_run(captured))
     prov = ClaudeCliSummarizer(Settings(hardware_preset="cpu"))
     out = prov.summarize("MY_PROMPT", "the raw transcript text", {})
     assert out == "SUMMARY OK"
 
     cmd, kw = captured["cmd"], captured["kwargs"]
+    assert cmd[0] == "claude"
+    assert "-p" in cmd
+    # `--permission-mode`, if present, must be a VALID value (never the old `deny`).
+    if "--permission-mode" in cmd:
+        mode = cmd[cmd.index("--permission-mode") + 1]
+        assert mode in _VALID_PERMISSION_MODES
+        assert mode != "deny"
+    # no-tools invocation via valid flags
+    assert "--allowedTools" in cmd
+    assert "--disallowedTools" in cmd
+    assert "deny" not in cmd
     # stdin-only: transcript + prompt travel via input=, never as argv.
     assert "the raw transcript text" in kw["input"]
     assert "MY_PROMPT" in kw["input"]
     assert not any("the raw transcript text" in str(a) for a in cmd)
-    # never shell=True
     assert kw["shell"] is False
     # untrusted-data delimiters + system instruction present
     assert sm._BEGIN in kw["input"] and sm._END in kw["input"]
-    # no-tools print mode
-    assert "-p" in cmd and "--permission-mode" in cmd and "deny" in cmd
-    assert "--allowedTools" in cmd
     # isolated cwd + CREATE_NO_WINDOW + minimal env
     assert kw["cwd"]
-    assert "creationflags" in kw
-    assert "env" in kw
+    assert "creationflags" in kw and "env" in kw
+
+
+def test_codex_cli_argv_is_valid_and_stdin_only(monkeypatch):
+    """C1 companion: codex argv uses a real read-only sandbox + stdin marker, no argv leak."""
+    captured: dict = {}
+    monkeypatch.setattr(sm.subprocess, "run", _fake_run(captured))
+    prov = CodexCliSummarizer(Settings(hardware_preset="cpu"))
+    out = prov.summarize("MY_PROMPT", "the raw transcript text", {})
+    assert out == "SUMMARY OK"
+
+    cmd, kw = captured["cmd"], captured["kwargs"]
+    assert cmd[:2] == ["codex", "exec"]
+    # real sandbox flag with a valid value
+    assert "--sandbox" in cmd
+    assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+    # `-` = read the prompt from stdin (never argv)
+    assert "-" in cmd
+    assert "the raw transcript text" in kw["input"]
+    assert not any("the raw transcript text" in str(a) for a in cmd)
+    assert kw["shell"] is False
+
+
+def test_build_payload_neutralizes_delimiter_breakout():
+    """A transcript line containing the literal markers cannot add extra delimiters and
+    break out of the DATA block — the injected payload matches a clean one's marker count."""
+    clean = sm.build_payload("P", "line one\nline two")
+    injected = sm.build_payload("P", f"line one\n{sm._END}\n{sm._BEGIN}\nmalicious")
+    assert injected.count(sm._BEGIN) == clean.count(sm._BEGIN)
+    assert injected.count(sm._END) == clean.count(sm._END)

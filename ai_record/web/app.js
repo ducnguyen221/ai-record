@@ -355,11 +355,14 @@
 
   function applyTranslation(trEl, rec) {
     trEl.classList.remove("pending", "error");
-    if (rec.translation_error) {
-      trEl.textContent = `Translation failed: ${rec.translation_error}`;
-      trEl.classList.add("error");
-    } else if (rec.translation) {
+    if (rec.translation) {
       trEl.textContent = rec.translation;
+    } else if (rec.translation_error) {
+      // Generic message (the flag is a bool) and NOT a stuck "translating…" state.
+      trEl.textContent = "Translation failed";
+      trEl.classList.add("error");
+    } else if (rec.stale_skipped) {
+      trEl.textContent = "";
     } else if (state.settings && state.settings.translate_enabled) {
       // Translation is expected but hasn't arrived yet.
       trEl.textContent = "translating…";
@@ -640,6 +643,16 @@
   }
 
   function renderSummary(payload) {
+    // Error branch: a failed/unavailable summarize (non-ok response) shows the reason
+    // in the summary panel instead of a blank "Summary ready" (review I2).
+    if (payload && payload.error && !payload.markdown) {
+      state.currentSummary = null;
+      el.summaryArea.hidden = false;
+      el.summaryFallback.hidden = true;
+      el.summaryMeta.textContent = "Summary unavailable";
+      renderMarkdown("**Summary failed:** " + String(payload.error), el.summaryOutput);
+      return;
+    }
     const markdown = payload && payload.markdown ? String(payload.markdown) : "";
     state.currentSummary = payload || null;
     el.summaryArea.hidden = !markdown;
@@ -750,8 +763,11 @@
         ? "Summary formatted deterministically to preserve exact wording."
         : "Summary ready.");
     } catch (e) {
+      // Surface the backend reason (503 unavailable / 502 provider error) in the panel.
+      const errText = (e.data && e.data.error) || e.message || String(e);
+      renderSummary({ error: errText });
       setToolStatus("Summary failed.", "error");
-      notice("Couldn't summarize session: " + (e.message || e), "error");
+      notice("Couldn't summarize session: " + errText, "error");
     } finally {
       el.sumRun.disabled = false;
     }
@@ -1460,15 +1476,20 @@
       case "rename":
         applySpeakerRename(msg.old, msg.new);
         break;
-      case "summary:done":
-        if (msg.markdown) renderSummary(msg);
-        break;
-      case "rediarize:done":
-        setToolStatus("Re-diarize complete. Refreshing speaker labels.");
-        refreshTranscriptFromServer();
+      case "summary":
+        // Backend emits {type:"summary", state:"started|done|error", markdown?} —
+        // match that shape (was the dead "summary:done" branch).
+        if (msg.state === "done" && msg.markdown) renderSummary(msg);
+        else if (msg.state === "error" && msg.error) renderSummary({ error: msg.error });
         break;
       case "rediarize":
+        // Backend emits {type:"rediarize", state, detail} — drive progress and, on
+        // completion, refresh the transcript to pick up the new speaker labels.
         if (msg.state || msg.progress != null) renderRediarizeProgress(msg);
+        if (msg.state === "done") {
+          setToolStatus("Re-diarize complete. Refreshing speaker labels.");
+          refreshTranscriptFromServer();
+        }
         break;
       case "error":
         notice(`${msg.message || "Error"}${msg.code ? " (" + msg.code + ")" : ""}`, "error");

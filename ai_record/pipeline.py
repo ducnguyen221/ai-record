@@ -170,6 +170,7 @@ class Pipeline:
         self.ladder = LadderController(settings, transcriber, self._broadcast_status)
         self._utterance_count = 0
         self._patch_count = 0
+        self._post_drops = 0
 
     # ------------------------------------------------------------------ #
     def start(self) -> None:
@@ -269,7 +270,31 @@ class Pipeline:
         self.broadcast({"type": "utterance", "record": rec.to_dict()})
         # Hand off translation + realtime diarization to the post worker (patches).
         if self._post_enabled:
-            self.post_queue.put((rec, utt))
+            self._enqueue_post(rec, utt)
+
+    def _enqueue_post(self, rec: UtteranceRecord, utt: Utterance) -> None:
+        """Enqueue post-processing WITHOUT ever blocking the STT worker (SPEC.md §4.5).
+
+        Post-processing (translation/diarization) is best-effort and skippable, so on a
+        full queue we drop the OLDEST item and count it — STT must never stall waiting
+        for a slow translator (review C2).
+        """
+        item = (rec, utt)
+        try:
+            self.post_queue.put_nowait(item)
+            return
+        except queue.Full:
+            pass
+        try:  # make room by dropping the oldest queued item
+            self.post_queue.get_nowait()
+            self.post_queue.task_done()
+            self._post_drops += 1
+        except queue.Empty:
+            pass
+        try:
+            self.post_queue.put_nowait(item)
+        except queue.Full:  # extremely unlikely race → drop the new item too
+            self._post_drops += 1
 
     # ------------------------------------------------------------------ #
     def _post_worker(self) -> None:
@@ -316,15 +341,28 @@ class Pipeline:
             duration=rec.duration, settings=self.settings,
         ):
             return
-        # Staleness skip (SPEC.md §5.4): the translator is falling behind → don't add lag.
-        if staleness > self.settings.translation_max_staleness_s:
-            self._emit_patch(rec.seq, {"translation": None, "translation_error": False, "stale_skipped": True})
-            return
+        # Provider unavailable (missing key / model not installed) → CLEAN skip, NOT an
+        # error: translation stays null with no translation_error (SPEC.md §5.4/§5.10,
+        # review I3). Only a genuine translate() failure of an AVAILABLE provider errors.
+        available = getattr(self.translator, "available", None)
+        if callable(available):
+            try:
+                is_avail = bool(available())
+            except Exception:  # pragma: no cover - defensive
+                is_avail = False
+            if not is_avail:
+                return
+        # is_supported BEFORE the staleness check so an unmapped language is a clean
+        # skip, not `stale_skipped` (review nit).
         supported = getattr(self.translator, "is_supported", lambda s, t: True)(
             rec.lang, self.settings.target_lang
         )
         if not supported:
             return  # unmapped language: leave translation null, NOT an error (SPEC.md §5.4)
+        # Staleness skip (SPEC.md §5.4): the translator is falling behind → don't add lag.
+        if staleness > self.settings.translation_max_staleness_s:
+            self._emit_patch(rec.seq, {"translation": None, "translation_error": False, "stale_skipped": True})
+            return
         try:
             result = self.translator.translate(rec.text, rec.lang, self.settings.target_lang)
         except Exception as exc:  # pragma: no cover - provider raised
@@ -367,6 +405,7 @@ class Pipeline:
             "dropped_frames": dropped,
             "utterance_count": self._utterance_count,
             "patch_count": self._patch_count,
+            "post_drops": self._post_drops,
         }
 
     def _broadcast_status(self) -> None:

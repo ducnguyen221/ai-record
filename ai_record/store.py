@@ -453,6 +453,7 @@ class SessionStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.settings = settings
         self._locks: dict[str, RWLock] = {}
+        self._patch_locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._seq: dict[str, int] = {}
         self._fsync_last: dict[str, float] = {}
@@ -463,6 +464,14 @@ class SessionStore:
             if session_id not in self._locks:
                 self._locks[session_id] = RWLock()
             return self._locks[session_id]
+
+    def _patch_lock(self, session_id: str) -> threading.Lock:
+        """A lock dedicated to ``patches.jsonl`` appends — deliberately SEPARATE from the
+        transcript RWLock so patch writes never block the STT append hot path (I4)."""
+        with self._locks_guard:
+            if session_id not in self._patch_locks:
+                self._patch_locks[session_id] = threading.Lock()
+            return self._patch_locks[session_id]
 
     def _validate_session_id(self, session_id: str) -> None:
         if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
@@ -490,6 +499,9 @@ class SessionStore:
 
     def _jsonl(self, session_id: str) -> Path:
         return self._dir(session_id) / "transcript.jsonl"
+
+    def _patches_path(self, session_id: str) -> Path:
+        return self._dir(session_id) / "patches.jsonl"
 
     def _md(self, session_id: str) -> Path:
         return self._dir(session_id) / "transcript.md"
@@ -571,27 +583,79 @@ class SessionStore:
 
     # -- patch ------------------------------------------------------------- #
     def patch_utterance(self, session_id: str, seq: int, fields: dict[str, Any]) -> None:
-        with self._lock(session_id).write():
-            records = list(self._iter_records(session_id))
-            changed = False
-            for rec in records:
-                if rec.seq == seq:
-                    for k, v in fields.items():
-                        if hasattr(rec, k):
-                            setattr(rec, k, v)
-                    changed = True
-                    break
-            if changed:
-                self._rewrite_all(session_id, records)
+        """Append a late-field update to ``patches.jsonl`` (SPEC.md §5.7 hot path).
+
+        Append-only + keyed by ``seq``: O(1), and crucially it takes ONLY the dedicated
+        patch lock, never the transcript RWLock, so it cannot block STT's
+        ``append_utterance`` (review I4). Patches are merged on read and consolidated
+        into ``transcript.jsonl`` at ``finalize()``.
+        """
+        entry: dict[str, Any] = {"seq": seq}
+        entry.update(fields)
+        path = self._patches_path(session_id)
+        with self._patch_lock(session_id):
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                fh.flush()
+
+    def _read_patches(self, session_id: str) -> dict[int, dict[str, Any]]:
+        """Merge ``patches.jsonl`` into ``{seq: {field: value}}`` (last write wins)."""
+        path = self._patches_path(session_id)
+        if not path.exists():
+            return {}
+        with self._patch_lock(session_id):
+            text = path.read_text(encoding="utf-8")
+        merged: dict[int, dict[str, Any]] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # tolerate a partial trailing line after a crash
+            seq = d.get("seq")
+            if seq is None:
+                continue
+            merged.setdefault(int(seq), {}).update({k: v for k, v in d.items() if k != "seq"})
+        return merged
+
+    @staticmethod
+    def _apply_patches(
+        records: list[UtteranceRecord], patches: dict[int, dict[str, Any]]
+    ) -> list[UtteranceRecord]:
+        if not patches:
+            return records
+        for rec in records:
+            p = patches.get(rec.seq)
+            if not p:
+                continue
+            for k, v in p.items():
+                if hasattr(rec, k):
+                    setattr(rec, k, v)
+        return records
+
+    def _records_with_patches(self, session_id: str) -> list[UtteranceRecord]:
+        records = list(self._iter_records(session_id))
+        return self._apply_patches(records, self._read_patches(session_id))
+
+    def _clear_patches(self, session_id: str) -> None:
+        path = self._patches_path(session_id)
+        with self._patch_lock(session_id):
+            if path.exists():
+                with contextlib.suppress(OSError):
+                    path.unlink()
 
     def utterances_since(self, session_id: str, since_seq: int) -> list[UtteranceRecord]:
         with self._lock(session_id).read():
-            return [r for r in self._iter_records(session_id) if r.seq > since_seq]
+            records = [r for r in self._iter_records(session_id) if r.seq > since_seq]
+            patches = self._read_patches(session_id)
+        return self._apply_patches(records, patches)
 
     # -- rename ------------------------------------------------------------ #
     def rename_speaker(self, session_id: str, old: str, new: str) -> int:
         with self._lock(session_id).write():
-            records = list(self._iter_records(session_id))
+            records = self._records_with_patches(session_id)
             count = 0
             for rec in records:
                 if rec.speaker == old:
@@ -599,6 +663,7 @@ class SessionStore:
                     count += 1
             if count:
                 self._rewrite_all(session_id, records)
+                self._clear_patches(session_id)
                 meta = self._read_meta(session_id)
                 meta.speakers[old] = new
                 self._write_meta(meta)
@@ -625,19 +690,27 @@ class SessionStore:
                 meta.summary_provider = provider
             self._write_meta(meta)
 
-    def rewrite_after_rediarize(self, session_id: str, new_labels: dict[int, str]) -> None:
-        """Apply offline (tier-2) speaker labels by seq (M4 hook; backup kept)."""
+    def rewrite_after_rediarize(
+        self, session_id: str, new_labels: dict[int, tuple[str, str | None, bool]]
+    ) -> None:
+        """Apply offline (tier-2) speaker labels by seq, preserving the secondary
+        candidate + overlap flag (review I5). ``new_labels[seq] = (primary, alt,
+        is_overlap)``. Keeps a pre-rediarize backup of the transcript."""
         with self._lock(session_id).write():
             jsonl = self._jsonl(session_id)
             if jsonl.exists():
                 backup = jsonl.with_suffix(".jsonl.pre-rediarize")
                 backup.write_bytes(jsonl.read_bytes())
-            records = list(self._iter_records(session_id))
+            records = self._records_with_patches(session_id)
             for rec in records:
                 if rec.seq in new_labels:
-                    rec.speaker = new_labels[rec.seq]
+                    primary, alt, is_overlap = new_labels[rec.seq]
+                    rec.speaker = primary
+                    rec.speaker_alt = alt
+                    rec.is_overlap = bool(is_overlap)
                     rec.diarization_source = "offline"
             self._rewrite_all(session_id, records)
+            self._clear_patches(session_id)
             meta = self._read_meta(session_id)
             meta.rediarized_at = _now_iso()
             self._write_meta(meta)
@@ -663,8 +736,10 @@ class SessionStore:
         with self._lock(session_id).read():
             meta = self._read_meta(session_id)
             records = list(self._iter_records(session_id))
+            patches = self._read_patches(session_id)
             summary_path = self._dir(session_id) / "summary.md"
             summary = summary_path.read_text(encoding="utf-8") if summary_path.exists() else None
+        records = self._apply_patches(records, patches)
         return SessionData(meta=meta, utterances=records, summary=summary)
 
     def list_sessions(self) -> list[SessionMeta]:
@@ -718,11 +793,14 @@ class SessionStore:
     # -- finalize / recovery ---------------------------------------------- #
     def finalize(self, session_id: str) -> None:
         with self._lock(session_id).write():
-            records = sorted(self._iter_records(session_id), key=lambda r: r.start)
-            # Re-render transcript.md sorted by start.
+            # Consolidate the append-only patches into transcript.jsonl (SPEC.md §5.7):
+            # merge patches, rewrite the canonical jsonl + md, then drop patches.jsonl.
+            records = self._apply_patches(
+                list(self._iter_records(session_id)), self._read_patches(session_id)
+            )
+            self._rewrite_all(session_id, records)  # jsonl (append order) + md (by start)
+            self._clear_patches(session_id)
             meta = self._read_meta(session_id)
-            lines = [f"# {meta.title}\n\n"] + [_render_md_line(r) for r in records]
-            _atomic_write(self._md(session_id), "".join(lines))
             # Concat raw segments → canonical WAVs by globbing ALL segment files
             # (not a fresh writer's index, which would only see segment 000).
             d = self._dir(session_id)

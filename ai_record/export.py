@@ -59,9 +59,21 @@ def _yaml_front_matter(meta: Any, records) -> str:
 
 def _yaml_str(value: str) -> str:
     value = value or ""
+    # Newlines would break the single-line front-matter scalar → fold to spaces.
+    value = value.replace("\r", " ").replace("\n", " ")
     if any(c in value for c in ':#[]{}\"') or value != value.strip():
         return '"' + value.replace('"', '\\"') + '"'
     return value
+
+
+def _safe_speaker(name: str) -> str:
+    """Neutralize markdown-/layout-breaking speaker labels in the export body: fold
+    newlines and drop emphasis/heading control chars so a hostile label can't break the
+    parseable structure (review nit)."""
+    name = (name or "").replace("\r", " ").replace("\n", " ")
+    for ch in ("*", "`", "#", "_", "[", "]"):
+        name = name.replace(ch, "")
+    return name.strip() or "Speaker ?"
 
 
 # --------------------------------------------------------------------------- #
@@ -70,7 +82,7 @@ def _yaml_str(value: str) -> str:
 def transcript_md(meta: Any, records) -> str:
     parts = [_yaml_front_matter(meta, records), "", "## Transcript", ""]
     for rec in records:
-        parts.append(f"**[{_fmt_hhmmss(rec.start)}] {rec.speaker} ({rec.lang}):** {rec.text}")
+        parts.append(f"**[{_fmt_hhmmss(rec.start)}] {_safe_speaker(rec.speaker)} ({rec.lang}):** {rec.text}")
         if getattr(rec, "translation", None):
             parts.append(f"> {rec.translation}")
         parts.append("")
@@ -81,7 +93,7 @@ def transcript_txt(meta: Any, records) -> str:
     m = _meta_dict(meta)
     parts = [f"{m.get('title', 'meeting')} — {(m.get('created_at') or '')[:10]}", ""]
     for rec in records:
-        parts.append(f"[{_fmt_hhmmss(rec.start)}] {rec.speaker}: {rec.text}")
+        parts.append(f"[{_fmt_hhmmss(rec.start)}] {_safe_speaker(rec.speaker)}: {rec.text}")
         if getattr(rec, "translation", None):
             parts.append(f"    {rec.translation}")
     return "\n".join(parts).rstrip() + "\n"
@@ -146,7 +158,7 @@ def combined_md(meta: Any, records, summary: str | None) -> str:
         "",
     ]
     for rec in records:
-        parts.append(f"**[{_fmt_hhmmss(rec.start)}] {rec.speaker} ({rec.lang}):** {rec.text}")
+        parts.append(f"**[{_fmt_hhmmss(rec.start)}] {_safe_speaker(rec.speaker)} ({rec.lang}):** {rec.text}")
         if getattr(rec, "translation", None):
             parts.append(f"> {rec.translation}")
         parts.append("")
