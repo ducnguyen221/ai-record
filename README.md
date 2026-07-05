@@ -180,3 +180,15 @@ Skip summarize, or use Ollama, and the app is fully local.
 ollama pull qwen2.5:7b
 # then in AI Record → Settings: Summarizer provider = Ollama, model = qwen2.5:7b
 ```
+
+### Model management (built in)
+The app ships a curated catalog and tooling so you can pick a model per machine and keep it current — **default is `qwen2.5:7b`**:
+
+- **Catalog:** `ai_record/summarizer_models.json` (single source of truth; the Ollama default is read from it). Endpoint `GET /api/models/catalog` returns `{default, models, current, installed, ollama_available}`.
+- **Pick in-app:** Settings → Summarization → **Ollama model** dropdown lists the catalog (shows `✓` for models already pulled, marks the default) plus a **Custom…** field for any tag. On another machine just pick the size that fits its GPU.
+- **Install / expand (any machine):**
+  ```
+  .\scripts\setup-ollama.ps1                 # installs Ollama (winget) if missing + pulls qwen2.5:7b
+  .\scripts\setup-ollama.ps1 -Model qwen2.5:14b   # or any other tag
+  ```
+- **Research updates:** `python scripts\research-models.py` lists installed models, best-effort checks the Ollama registry for newer tags per family, and suggests `ollama pull` commands (degrades gracefully offline / without Ollama). For a broader survey of newly released models, ask the AI Record agent to refresh `summarizer_models.json` via web research.

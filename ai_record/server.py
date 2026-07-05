@@ -86,6 +86,8 @@ class AppState:
         # Offline re-diarization progress, keyed by session id (SPEC.md §5.5 tier 2).
         self.rediarize_state: dict[str, dict] = {}
         self._rediarize_threads: dict[str, Any] = {}
+        # Auto AI-summary worker threads, keyed by session id (joinable in tests).
+        self._summary_threads: dict[str, Any] = {}
 
     # -- auth ------------------------------------------------------------- #
     def allowed_origins(self) -> set[str]:
@@ -412,6 +414,28 @@ def create_app(state: AppState) -> FastAPI:
         state.store.delete_audio_only(sid)
         return {"audio_deleted": True}
 
+    # -- summarizer model catalog ---------------------------------------- #
+    @app.get("/api/models/catalog", dependencies=dep)
+    async def models_catalog() -> dict:
+        """Curated local-summarizer model catalog + what's installed locally.
+
+        ``installed`` comes from ``ollama list`` via a small mockable helper; it
+        never crashes and returns ``[]`` (with ``ollama_available:false``) when the
+        ``ollama`` binary is absent (SPEC.md §5.6 / model-management addendum).
+        """
+        from . import models as _models
+
+        catalog = _models.load_model_catalog()
+        available = _models.ollama_available()
+        installed = _models.list_installed_models() if available else []
+        return {
+            "default": catalog.get("default"),
+            "models": catalog.get("models", []),
+            "current": state.settings.ollama_model,
+            "installed": installed,
+            "ollama_available": available,
+        }
+
     # -- settings / secrets ---------------------------------------------- #
     @app.get("/api/settings", dependencies=dep)
     async def get_settings() -> dict:
@@ -608,7 +632,46 @@ def _stop_capture(state: AppState) -> str | None:
     if sid is not None:
         with _suppress():
             state.store.finalize(sid)
+        # Auto AI-summary at session end (opt-in via output_formats). Runs in a daemon
+        # thread so Stop / window-close stays responsive; guarded so nothing here can
+        # crash the stop path.
+        with _suppress():
+            _maybe_autosummary(state, sid)
     state.pipeline = None
     state.capture = None
     state.active_session_id = None
     return sid
+
+
+def _maybe_autosummary(state: AppState, sid: str) -> None:
+    """If "summary" is a selected output format, build + save an AI summary in a
+    background daemon thread after finalize, then broadcast a ``summary`` WS event.
+
+    Everything is guarded: a missing/unavailable provider or any summarizer error is
+    logged and skipped — it never crashes the stop path and never blocks the caller.
+    NOTE: on an immediate app-exit the daemon thread may not finish; that's acceptable
+    (Stop is the normal path). The thread is stashed on ``state._summary_threads`` so
+    tests can join it deterministically.
+    """
+    import threading
+
+    formats = getattr(state.settings, "output_formats", None) or []
+    if "summary" not in formats:
+        return
+    provider = getattr(state.settings, "summarizer_provider", "claude_cli")
+    scenario = getattr(state.settings, "summarizer_scenario", None) or "minutes"
+
+    def _worker() -> None:
+        try:
+            from .summarizer import build_summary
+
+            data = state.store.load_session(sid)
+            result = build_summary(data, scenario, provider, state.settings, state.secrets)
+            state.store.write_summary(sid, result.markdown, result.scenario, result.provider)
+            state.submit({"type": "summary", "state": "done", "session_id": sid})
+        except Exception as exc:  # provider unavailable / error → log + skip
+            log.warning("auto-summary failed for %s: %s", sid, exc)
+
+    t = threading.Thread(target=_worker, name=f"autosummary-{sid}", daemon=True)
+    state._summary_threads[sid] = t
+    t.start()

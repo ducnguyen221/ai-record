@@ -825,28 +825,41 @@ class SessionStore:
     ) -> None:
         """Write opt-in outputs at finalize (SPEC §5.7 output artefacts).
 
-        ``transcript.md`` is always written elsewhere. Here we honour the settings:
-          * ``save_txt`` → also write a plain-text ``transcript.txt`` (reusing the
-            export renderer so the format matches downloads).
-          * audio: default (``keep_audio`` off) DELETES the per-source wav(s) +
-            ``samples.idx``. Note: tier-2 offline re-diarize needs the audio, so it
-            is unavailable once the audio is not kept. When ``keep_audio`` is on and
-            ``audio_export_format == "mp3"`` we transcode each canonical wav to mp3
-            via ffmpeg (deleting the wav on success); ``"wav"`` leaves the wavs.
+        Driven by ``settings.output_formats`` (the canonical multi-select), OR-ed with
+        the legacy booleans (``save_txt`` / ``keep_audio`` + ``audio_export_format``)
+        for backward-compat so existing behaviour and tests keep working:
+          * ``transcript.txt`` when ``"txt" in output_formats`` OR ``save_txt``.
+          * audio kept + transcoded to mp3 when ``"mp3" in output_formats`` OR
+            (``keep_audio`` and format ``mp3``); kept as wav when ``"wav" in
+            output_formats`` OR (``keep_audio`` and format ``wav``); otherwise every
+            wav + ``samples.idx`` is deleted (default md-only). Tier-2 offline
+            re-diarize needs the audio, so it is unavailable once audio is not kept.
+          * ``transcript.md`` is always written elsewhere.
+        The AI summary ("summary") is NOT produced here — store has no summarizer; the
+        server kicks it after finalize (see server._maybe_autosummary).
         """
         s = self.settings
+        formats = set(getattr(s, "output_formats", None) or [])
+        keep_audio = getattr(s, "keep_audio", False)
+        fmt = getattr(s, "audio_export_format", "mp3")
+
+        want_txt = ("txt" in formats) or bool(getattr(s, "save_txt", False))
+        want_mp3 = ("mp3" in formats) or (keep_audio and fmt == "mp3")
+        want_wav = ("wav" in formats) or (keep_audio and fmt == "wav")
 
         # 1) Plain-text transcript (reuse export.transcript_txt — do not duplicate).
-        if getattr(s, "save_txt", False):
+        if want_txt:
             from .export import transcript_txt
 
             with contextlib.suppress(Exception):
                 _atomic_write(d / "transcript.txt", transcript_txt(meta, records))
 
-        # 2) Audio: keep / transcode / delete.
-        keep_audio = getattr(s, "keep_audio", False)
-        fmt = getattr(s, "audio_export_format", "mp3")
-        if not keep_audio:
+        # 2) Audio: transcode to mp3 / keep as wav / delete.
+        if want_mp3:
+            self._transcode_audio_to_mp3(d)
+        elif want_wav:
+            pass  # leave the canonical wavs (and segments) in place.
+        else:
             # Default: md-only. Drop every wav (canonical + per-minute segments) + idx.
             for wav in list(d.glob("*.wav")):
                 with contextlib.suppress(OSError):
@@ -855,11 +868,6 @@ class SessionStore:
             if idx.exists():
                 with contextlib.suppress(OSError):
                     idx.unlink()
-            return
-
-        if fmt == "mp3":
-            self._transcode_audio_to_mp3(d)
-        # fmt == "wav": leave the canonical wavs (and segments) in place.
 
     def _transcode_audio_to_mp3(self, d: Path) -> None:
         """Transcode each canonical ``audio_<src>.wav`` to mp3 via ffmpeg, then drop the

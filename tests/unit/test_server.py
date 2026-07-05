@@ -201,9 +201,110 @@ def test_ws_durable_client_evicted_past_deadline(client):
     state.loop.close()
 
 
+def test_models_catalog_requires_token(client):
+    assert client.get("/api/models/catalog").status_code == 401
+
+
+def test_models_catalog_returns_default_and_current(client, monkeypatch):
+    import ai_record.models as models
+
+    # Force the "ollama installed, two models pulled" path via the mockable helpers.
+    monkeypatch.setattr(models, "ollama_available", lambda: True)
+    monkeypatch.setattr(models, "list_installed_models", lambda: ["qwen2.5:7b", "llama3.1:8b"])
+    r = client.get("/api/models/catalog", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["default"] == "qwen2.5:7b"
+    assert body["current"] == client.ai_state.settings.ollama_model
+    assert body["ollama_available"] is True
+    assert body["installed"] == ["qwen2.5:7b", "llama3.1:8b"]
+    tags = {m["tag"] for m in body["models"]}
+    assert "qwen2.5:7b" in tags
+
+
+def test_models_catalog_ollama_absent(client, monkeypatch):
+    import ai_record.models as models
+
+    monkeypatch.setattr(models, "ollama_available", lambda: False)
+
+    def _boom():
+        raise AssertionError("list_installed_models must not run when ollama is absent")
+
+    monkeypatch.setattr(models, "list_installed_models", _boom)
+    r = client.get("/api/models/catalog", headers=H)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ollama_available"] is False
+    assert body["installed"] == []
+
+
 def test_traversal_session_id_404(client):
     """A backslash-traversal session id returns 404, never escapes the root."""
     r = client.get("/api/sessions/..%5Cdocs", headers=H)
     assert r.status_code == 404
     r2 = client.delete("/api/sessions/..%5Cdocs", headers=H)
     assert r2.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Auto AI-summary at session end (output_formats includes "summary")
+# --------------------------------------------------------------------------- #
+def _seed_session(store, text="hello auto summary"):
+    from tests.unit.test_store import _rec
+
+    sess = store.create("autosum")
+    store.append_utterance(_rec(store, sess.session_id, text=text))
+    return sess.session_id
+
+
+def test_stop_capture_auto_summary_when_selected(client, monkeypatch):
+    import ai_record.summarizer as summarizer_mod
+    from ai_record.server import _stop_capture
+    from ai_record.summarizer import SummaryResult
+
+    state = client.ai_state
+    state.settings = state.settings.update({"output_formats": ["md", "summary"]})
+    sid = _seed_session(state.store)
+    state.active_session_id = sid
+
+    calls = {}
+
+    def fake_build(data, scenario, provider, settings, secrets, **kw):
+        calls["scenario"] = scenario
+        calls["provider"] = provider
+        return SummaryResult(markdown="# Auto\n\nnotes", scenario=scenario, provider=provider)
+
+    monkeypatch.setattr(summarizer_mod, "build_summary", fake_build)
+
+    out = _stop_capture(state)
+    assert out == sid
+    t = state._summary_threads.get(sid)
+    assert t is not None
+    t.join(timeout=5)
+    assert not t.is_alive()
+
+    summ = state.store._dir(sid) / "summary.md"
+    assert summ.exists()
+    assert "Auto" in summ.read_text(encoding="utf-8")
+    # default scenario is "minutes" when settings has no summarizer_scenario.
+    assert calls["scenario"] == "minutes"
+
+
+def test_stop_capture_no_summary_when_not_selected(client, monkeypatch):
+    import ai_record.summarizer as summarizer_mod
+    from ai_record.server import _stop_capture
+
+    state = client.ai_state
+    state.settings = state.settings.update({"output_formats": ["md"]})
+    sid = _seed_session(state.store)
+    state.active_session_id = sid
+
+    def boom(*a, **k):
+        raise AssertionError("build_summary must not run without 'summary' selected")
+
+    monkeypatch.setattr(summarizer_mod, "build_summary", boom)
+
+    out = _stop_capture(state)
+    assert out == sid
+    assert sid not in state._summary_threads
+    assert not (state.store._dir(sid) / "summary.md").exists()

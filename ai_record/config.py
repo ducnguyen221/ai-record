@@ -31,6 +31,10 @@ SECRET_NAMES = ("hf_token", "gemini_api_key")
 # Summarization scenarios (addendum §E2). Each is a named, user-editable prompt
 # template; the transcript is appended (hardened, delimited) by the summarizer.
 # Default scenario is ``reformat`` (lossless structuring with an integrity guard).
+# Valid session output artefacts (Feature: output formats multi-select). "md" is the
+# base transcript and is ALWAYS produced even if omitted from the list.
+OUTPUT_FORMATS_VALID: tuple[str, ...] = ("md", "txt", "mp3", "wav", "summary")
+
 SUMMARY_SCENARIOS: tuple[str, ...] = (
     "reformat",
     "minutes",
@@ -68,6 +72,34 @@ DEFAULT_SUMMARY_SCENARIOS: dict[str, str] = {
         "flowing prose that explains what was covered. Vietnamese-first. Output Markdown."
     ),
 }
+
+
+# --------------------------------------------------------------------------- #
+# Local-summarizer model catalog (curated Ollama models — see models.py)
+# --------------------------------------------------------------------------- #
+# Literal used only if the catalog JSON is unreadable at import time.
+_OLLAMA_DEFAULT_FALLBACK = "qwen2.5:7b"
+
+
+def load_model_catalog() -> dict[str, Any]:
+    """Load the curated summarizer-model catalog (safe fallback).
+
+    Thin re-export of :func:`ai_record.models.load_model_catalog` so callers that
+    already import :mod:`ai_record.config` have one place to reach the catalog.
+    """
+    from .models import load_model_catalog as _load
+
+    return _load()
+
+
+def _default_ollama_model() -> str:
+    """Resolve the default Ollama model tag from the catalog (literal fallback)."""
+    try:
+        from .models import default_model
+
+        return default_model()
+    except Exception:  # pragma: no cover - defensive; models.py is import-safe
+        return _OLLAMA_DEFAULT_FALLBACK
 
 
 # --------------------------------------------------------------------------- #
@@ -359,7 +391,7 @@ class Settings:
     summary_use_translation: bool = True
     summary_max_chars: int = 48000
     summary_timeout_s: int = 300
-    ollama_model: str = "llama3.1"
+    ollama_model: str = field(default_factory=lambda: _default_ollama_model())
     ollama_url: str = "http://localhost:11434"
 
     # storage / durability
@@ -367,6 +399,12 @@ class Settings:
     fsync_interval_ms: int = 1000
 
     # output artefacts (transcript.md is ALWAYS written; these are opt-in extras)
+    #
+    # ``output_formats`` is the canonical, extensible multi-select chosen before Start
+    # (valid items: OUTPUT_FORMATS_VALID; unknowns are ignored; "md" is always present).
+    # The legacy booleans below are kept for backward-compat and OR-ed with the list at
+    # finalize (see store._write_optional_outputs).
+    output_formats: list[str] = field(default_factory=lambda: ["md"])
     keep_audio: bool = False           # keep per-source audio after finalize (else deleted)
     audio_export_format: str = "mp3"   # "mp3" (transcode via ffmpeg) | "wav" (leave as-is)
     save_txt: bool = False             # also write a plain-text transcript.txt on finalize
@@ -402,6 +440,14 @@ class Settings:
             raise ValueError("retention_days must be >= 0")
         if self.max_speakers < 1:
             raise ValueError("max_speakers must be >= 1")
+        # output_formats: keep only valid items (dedupe, preserve order), always "md".
+        cleaned: list[str] = []
+        for f in self.output_formats or []:
+            if f in OUTPUT_FORMATS_VALID and f not in cleaned:
+                cleaned.append(f)
+        if "md" not in cleaned:
+            cleaned.insert(0, "md")
+        self.output_formats = cleaned
 
     # ----------------------------------------------------------------- #
     @classmethod

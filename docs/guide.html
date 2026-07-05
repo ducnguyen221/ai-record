@@ -192,6 +192,16 @@
 ollama pull qwen2.5:7b
 # 2) Trong AI Record → Settings: Summarizer provider = Ollama, model = qwen2.5:7b</code></pre>
 
+  <h3>Mở rộng model &amp; cài trên máy khác</h3>
+  <p>App có sẵn <b>catalog model</b> (<code>ai_record/summarizer_models.json</code>, mặc định <b>qwen2.5:7b</b>) + công cụ để chọn/mở rộng/cập nhật:</p>
+  <ul>
+    <li><b>Chọn trong app:</b> Settings → Summarization → dropdown <b>Ollama model</b> (hiện <span class="pill">✓</span> model đã tải, đánh dấu mặc định) + ô <b>Custom…</b> cho tag bất kỳ. Máy khác chỉ cần chọn cỡ hợp GPU của nó, <b>default vẫn Qwen</b>.</li>
+    <li><b>Cài / mở rộng (máy bất kỳ):</b>
+      <pre><code>.\scripts\setup-ollama.ps1                    # cài Ollama (winget) nếu thiếu + pull qwen2.5:7b
+.\scripts\setup-ollama.ps1 -Model qwen2.5:14b   # hoặc tag khác</code></pre></li>
+    <li><b>Research cập nhật model:</b> <code>python scripts\research-models.py</code> — liệt kê model đã cài, dò registry Ollama tìm tag mới theo từng dòng, gợi ý lệnh <code>ollama pull</code> (chạy được cả khi offline). Hoặc nhờ <b>AI Record agent</b> research bằng web để cập nhật catalog theo nhu cầu.</li>
+  </ul>
+
   <h2 id="luutru"><span class="n">9</span>Nơi lưu dữ liệu</h2>
   <p>Mỗi phiên = một thư mục theo thời gian tại:</p>
   <pre><code>%LOCALAPPDATA%\ai-record\sessions\&lt;YYYYMMDD-HHMMSS&gt;-&lt;tiêu-đề&gt;\

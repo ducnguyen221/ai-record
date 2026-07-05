@@ -1,0 +1,70 @@
+{
+  "default": "qwen2.5:7b",
+  "updated": "2026-07-05",
+  "models": [
+    {
+      "tag": "qwen2.5:7b",
+      "family": "qwen2.5",
+      "params": "7B",
+      "vram_gb": 5,
+      "tier": "8-12GB",
+      "langs": "VN/JP/ZH best",
+      "recommended": true,
+      "note": "Best balance for Vietnamese + multilingual"
+    },
+    {
+      "tag": "qwen2.5:14b",
+      "family": "qwen2.5",
+      "params": "14B",
+      "vram_gb": 9,
+      "tier": "12-16GB",
+      "langs": "excellent",
+      "note": "Top quality; run post-meeting"
+    },
+    {
+      "tag": "qwen2.5:3b",
+      "family": "qwen2.5",
+      "params": "3B",
+      "vram_gb": 3,
+      "tier": "<8GB / laptop",
+      "langs": "good",
+      "note": "Low-VRAM fallback"
+    },
+    {
+      "tag": "llama3.1:8b",
+      "family": "llama3.1",
+      "params": "8B",
+      "vram_gb": 5,
+      "tier": "8-12GB",
+      "langs": "ok (weaker VN)",
+      "note": "Popular general"
+    },
+    {
+      "tag": "gemma2:9b",
+      "family": "gemma2",
+      "params": "9B",
+      "vram_gb": 6,
+      "tier": "8-12GB",
+      "langs": "ok",
+      "note": "Solid"
+    },
+    {
+      "tag": "phi4",
+      "family": "phi4",
+      "params": "14B",
+      "vram_gb": 9,
+      "tier": "12-16GB",
+      "langs": "weak VN",
+      "note": "Strong reasoning, English-centric"
+    },
+    {
+      "tag": "mistral-nemo",
+      "family": "mistral-nemo",
+      "params": "12B",
+      "vram_gb": 7,
+      "tier": "12GB",
+      "langs": "ok multilingual",
+      "note": "Good general"
+    }
+  ]
+}

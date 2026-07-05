@@ -34,6 +34,7 @@
     languages: [],
     rediarizeTimer: null,
     currentSummary: null,
+    modelCatalog: null,      // {default, models, current, installed, ollama_available}
   };
 
   const MAX_ROWS = 500;      // cap DOM nodes for very long transcripts
@@ -309,6 +310,94 @@
   }
   el.cTranslate.addEventListener("click", () => setTranslateEnabled(!(state.settings && state.settings.translate_enabled)));
   el.xTranslate.addEventListener("click", () => setTranslateEnabled(!(state.settings && state.settings.translate_enabled)));
+
+  /* ============================ OUTPUT FORMATS DROPDOWN ============================ */
+  // A pre-Start multi-select choosing which artefacts a session saves. Two identical
+  // dropdowns (compact + expanded) share ONE source of truth: settings.output_formats.
+  // ".md" is always on (checked + disabled). Editing anytime; applies at next finalize.
+  const OUTPUT_OPTIONS = [
+    { key: "md", label: ".md — bản ghi (luôn lưu)", fixed: true },
+    { key: "txt", label: ".txt — văn bản thuần" },
+    { key: "mp3", label: ".mp3 — kèm audio" },
+    { key: "summary", label: "AI summary — tóm tắt tự động" },
+  ];
+  const OUTPUT_ORDER = OUTPUT_OPTIONS.map((o) => o.key);
+  const outputDropdowns = [];  // { btn, pop, checks: Map<key, input> }
+
+  // Current formats as a Set: sanitize to known keys and always include "md".
+  function currentOutputFormats() {
+    const raw = (state.settings && state.settings.output_formats) || ["md"];
+    const set = new Set((Array.isArray(raw) ? raw : []).filter((f) => OUTPUT_ORDER.includes(f)));
+    set.add("md");
+    return set;
+  }
+
+  function outputLabel(set) {
+    const on = OUTPUT_ORDER.filter((k) => set.has(k));
+    if (on.length <= 2) return "Lưu: " + on.join(", ");
+    return `Lưu: ${on[0]} +${on.length - 1}`;
+  }
+
+  async function setOutputFormat(key, on) {
+    const set = currentOutputFormats();
+    if (on) set.add(key); else set.delete(key);
+    set.add("md");  // always produced
+    const list = OUTPUT_ORDER.filter((k) => set.has(k));
+    await putSetting({ output_formats: list });
+    refreshOutputDropdowns();
+  }
+
+  function closeAllOutputPops() {
+    for (const d of outputDropdowns) {
+      d.pop.hidden = true;
+      d.btn.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function refreshOutputDropdowns() {
+    const set = currentOutputFormats();
+    const label = outputLabel(set);
+    for (const d of outputDropdowns) {
+      d.btn.textContent = label;
+      for (const [key, cb] of d.checks) cb.checked = set.has(key);
+    }
+  }
+
+  function registerOutputDropdown(btnId) {
+    const btn = $(btnId);
+    if (!btn) return;
+    const wrap = btn.parentNode;  // .output-dd (relative-positioned)
+    const pop = document.createElement("div");
+    pop.className = "output-pop";
+    pop.hidden = true;
+    const checks = new Map();
+    for (const opt of OUTPUT_OPTIONS) {
+      const row = document.createElement("label");
+      row.className = "output-opt";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = opt.key === "md";
+      if (opt.fixed) cb.disabled = true;
+      const span = document.createElement("span");
+      span.textContent = opt.label;
+      row.append(cb, span);
+      if (!opt.fixed) cb.addEventListener("change", () => setOutputFormat(opt.key, cb.checked));
+      checks.set(opt.key, cb);
+      pop.appendChild(row);
+    }
+    wrap.appendChild(pop);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = pop.hidden;
+      closeAllOutputPops();
+      if (willOpen) { refreshOutputDropdowns(); pop.hidden = false; btn.setAttribute("aria-expanded", "true"); }
+    });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    outputDropdowns.push({ btn, pop, checks });
+  }
+  registerOutputDropdown("c-output");
+  registerOutputDropdown("x-output");
+  document.addEventListener("click", closeAllOutputPops);
 
   /* ============================ TRANSCRIPT RENDERING ============================ */
   function speakerText(rec) {
@@ -1112,6 +1201,17 @@
     buildSettings();
     await loadLanguages();
     buildSettings();
+    // Populate the Ollama model picker from the catalog (best-effort; async).
+    loadModelCatalogInto();
+  }
+
+  async function loadModelCatalogInto() {
+    try {
+      state.modelCatalog = await api("/api/models/catalog");
+    } catch (_) {
+      state.modelCatalog = null;
+    }
+    fillModelPicker();
   }
   el.xSettings.addEventListener("click", openSettings);
   el.setClose.addEventListener("click", () => { el.settings.hidden = true; });
@@ -1342,13 +1442,16 @@
       (v) => putSetting({ retention_days: v }), { number: true, min: 0 }));
     el.setBody.appendChild(gStore);
 
-    /* --- Output files (Feature 2) --- */
+    /* --- Output files (bound to the SAME output_formats as the toolbar dropdown) --- */
     const gOut = group("Lưu kết quả");
+    const outSet = currentOutputFormats();
     gOut.appendChild(rowReadonly("Bản ghi (.md)", "transcript.md — luôn lưu", "luôn lưu"));
-    gOut.appendChild(rowToggle("Kèm audio (.mp3)", "giữ audio, chuyển sang mp3 khi kết thúc",
-      s.keep_audio, (v) => putSetting({ keep_audio: v, audio_export_format: "mp3" })));
     gOut.appendChild(rowToggle("Kèm .txt", "cũng lưu transcript.txt dạng văn bản thuần",
-      s.save_txt, (v) => putSetting({ save_txt: v })));
+      outSet.has("txt"), (v) => setOutputFormat("txt", v)));
+    gOut.appendChild(rowToggle("Kèm audio (.mp3)", "giữ audio, chuyển sang mp3 khi kết thúc",
+      outSet.has("mp3"), (v) => setOutputFormat("mp3", v)));
+    gOut.appendChild(rowToggle("AI summary", "tự tạo + lưu tóm tắt khi kết thúc phiên",
+      outSet.has("summary"), (v) => setOutputFormat("summary", v)));
     el.setBody.appendChild(gOut);
 
     /* --- Appearance --- */
@@ -1390,7 +1493,9 @@
       }));
     gSum.appendChild(rowToggle("Use translations", "feed Vietnamese text to summaries when available",
       s.summary_use_translation, (v) => putSetting({ summary_use_translation: v })));
+    gSum.appendChild(buildModelPickerRow());
     el.setBody.appendChild(gSum);
+    fillModelPicker();
 
     /* --- Legal --- */
     const gLegal = group("Legal");
@@ -1402,6 +1507,92 @@
     gLegal.appendChild(legal);
     if (s.app_version) gLegal.appendChild(rowReadonly("App version", null, s.app_version));
     el.setBody.appendChild(gLegal);
+  }
+
+  /* --- Ollama model picker (catalog-driven; applies to the Ollama provider) --- */
+  function buildModelPickerRow() {
+    const row = mkRow("Ollama model", "local model for the Ollama summarizer provider");
+    const ctl = row.querySelector(".ctl");
+    ctl.classList.add("model-picker");
+
+    const sel = document.createElement("select");
+    sel.id = "ollama-model-select";
+    ctl.appendChild(sel);
+
+    const custom = document.createElement("input");
+    custom.type = "text";
+    custom.id = "ollama-model-custom";
+    custom.placeholder = "e.g. qwen2.5:32b";
+    custom.hidden = true;
+    ctl.appendChild(custom);
+
+    sel.addEventListener("change", () => {
+      if (sel.value === "__custom__") {
+        custom.hidden = false;
+        custom.focus();
+        return;
+      }
+      custom.hidden = true;
+      if (sel.value) putSetting({ ollama_model: sel.value });
+    });
+    custom.addEventListener("change", () => {
+      const v = custom.value.trim();
+      if (v) putSetting({ ollama_model: v });
+    });
+
+    return row;
+  }
+
+  function fillModelPicker() {
+    const sel = document.getElementById("ollama-model-select");
+    const custom = document.getElementById("ollama-model-custom");
+    if (!sel) return; // drawer not open / row not built
+    const cat = state.modelCatalog;
+    const s = state.settings || {};
+    const current = (cat && cat.current) || s.ollama_model || "";
+    const installed = new Set((cat && cat.installed) || []);
+    const defaultTag = (cat && cat.default) || "";
+
+    sel.textContent = "";
+    const models = (cat && cat.models) || [];
+    if (!models.length) {
+      // Catalog unavailable — still let the user set/keep a custom tag.
+      const opt = document.createElement("option");
+      opt.value = current;
+      opt.textContent = current || "(catalog unavailable)";
+      opt.selected = true;
+      sel.appendChild(opt);
+    } else {
+      for (const m of models) {
+        const opt = document.createElement("option");
+        opt.value = m.tag;
+        const vram = m.vram_gb != null ? `~${m.vram_gb}GB` : "";
+        const parts = [m.params, vram, m.langs].filter(Boolean).join(" · ");
+        const marks = [];
+        if (installed.has(m.tag)) marks.push("✓");
+        if (m.tag === defaultTag) marks.push("default");
+        else if (m.recommended) marks.push("recommended");
+        const suffix = marks.length ? `  [${marks.join(", ")}]` : "";
+        opt.textContent = `${m.tag} — ${parts}${suffix}`;
+        sel.appendChild(opt);
+      }
+    }
+
+    // "Custom…" free-text escape hatch for any tag not in the catalog.
+    const customOpt = document.createElement("option");
+    customOpt.value = "__custom__";
+    customOpt.textContent = "Custom…";
+    sel.appendChild(customOpt);
+
+    // Reflect the current setting: pick it if listed, else show it as custom.
+    const known = models.some((m) => m.tag === current);
+    if (current && known) {
+      sel.value = current;
+      if (custom) custom.hidden = true;
+    } else if (current) {
+      sel.value = "__custom__";
+      if (custom) { custom.hidden = false; custom.value = current; }
+    }
   }
 
   function uniq(v, i, arr) { return v != null && v !== "" && arr.indexOf(v) === i; }
@@ -1663,6 +1854,7 @@
     state.consentOk = !!(state.settings && state.settings.consent_acknowledged);
     applyTheme();
     updateTranslateButtons();
+    refreshOutputDropdowns();
     syncSummaryProvider();
     refreshToggleEnabled();
     return state.settings;

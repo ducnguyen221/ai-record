@@ -212,6 +212,41 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 .compact-toolbar .icon-btn { width: 32px; }
 .compact-source { min-width: 116px; }
 .compact-translate { flex: none; }
+.compact-output { flex: none; }
+
+/* ============================ OUTPUT FORMATS DROPDOWN ============================ */
+.output-dd { position: relative; display: inline-flex; align-items: center; flex: none; }
+.compact-toolbar .output-dd .toggle-btn { height: 32px; }
+.output-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.output-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.output-opt:hover { background: var(--surface-2); }
+.output-opt input { flex: none; cursor: pointer; }
+.output-opt input:disabled { cursor: default; }
+.output-opt input:disabled + span { color: var(--text-muted); }
 .compact-body { flex: 1 1 auto; min-width: 0; }  /* legacy (unused after toolbar redesign) */
 .compact .recent { flex: 1 1 auto; min-height: 0; }   /* transcript fills the width + remaining height */
 
@@ -601,6 +636,11 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 }
 .set-row .val { color: var(--text-muted); font-size: 12.5px; }
 .set-row.readonly .val { font-family: var(--font-mono); font-size: 12px; }
+
+/* Ollama model picker: let the select + optional custom input wrap and grow. */
+.set-row .ctl.model-picker { flex-wrap: wrap; justify-content: flex-end; max-width: 260px; }
+.set-row .ctl.model-picker select { max-width: 260px; }
+.set-row .ctl.model-picker input[type="text"] { max-width: 260px; }
 
 .lang-picker {
   display: flex;

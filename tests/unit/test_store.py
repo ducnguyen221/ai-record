@@ -356,3 +356,68 @@ def test_finalize_keeps_wav_when_format_wav(tmp_path):
     w.close()
     store.finalize(sid)
     assert (d / "audio_them.wav").exists()
+
+
+# --------------------------------------------------------------------------- #
+# finalize driven by output_formats multi-select (new feature)
+# --------------------------------------------------------------------------- #
+def test_finalize_output_formats_txt_writes_transcript_txt(tmp_path):
+    store = _store_with(tmp_path, output_formats=["md", "txt"])
+    sid = store.create("of-txt").session_id
+    store.append_utterance(_rec(store, sid, text="alpha beta", speaker="Alice"))
+    store.finalize(sid)
+    txt = store._dir(sid) / "transcript.txt"
+    assert txt.exists()
+    assert "alpha beta" in txt.read_text(encoding="utf-8")
+
+
+def test_finalize_output_formats_md_only_removes_wav(tmp_path):
+    store = _store_with(tmp_path, output_formats=["md"])
+    sid = store.create("of-md").session_id
+    d = store._dir(sid)
+    w = WavWriter(str(d / "audio_them.wav"))
+    w.write(np.zeros(16000, dtype=np.float32))
+    w.close()
+    (d / "samples.idx").write_text('{"kind":"segment"}\n', encoding="utf-8")
+    store.finalize(sid)
+    assert not (d / "audio_them.wav").exists()
+    assert not (d / "samples.idx").exists()
+    assert not (store._dir(sid) / "transcript.txt").exists()
+
+
+def test_finalize_output_formats_mp3_transcodes_and_removes_wav(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    store = _store_with(tmp_path, output_formats=["md", "mp3"])
+    sid = store.create("of-mp3").session_id
+    d = store._dir(sid)
+    w = WavWriter(str(d / "audio_you.wav"))
+    w.write(np.zeros(16000, dtype=np.float32))
+    w.close()
+
+    monkeypatch.setattr(shutil, "which", lambda name: "ffmpeg" if name == "ffmpeg" else None)
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        with open(cmd[-1], "wb") as f:  # ffmpeg output path = last arg
+            f.write(b"ID3fake-mp3-bytes")
+        return _Result()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    store.finalize(sid)
+    assert (d / "audio_you.mp3").exists()
+    assert not (d / "audio_you.wav").exists()
+
+
+def test_finalize_legacy_save_txt_still_writes_txt(tmp_path):
+    # Backward-compat: legacy boolean is OR-ed with output_formats.
+    store = _store_with(tmp_path, output_formats=["md"], save_txt=True)
+    sid = store.create("legacy-txt").session_id
+    store.append_utterance(_rec(store, sid, text="legacy line"))
+    store.finalize(sid)
+    txt = store._dir(sid) / "transcript.txt"
+    assert txt.exists()
+    assert "legacy line" in txt.read_text(encoding="utf-8")

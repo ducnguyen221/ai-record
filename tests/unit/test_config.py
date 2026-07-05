@@ -122,3 +122,36 @@ def test_output_settings_appear_in_redacted():
     assert red["audio_export_format"] == "mp3"
     # redaction still only exposes secret booleans, never values.
     assert "hf_token" not in red and "gemini_api_key" not in red
+
+
+# --------------------------------------------------------------------------- #
+# output_formats multi-select (new feature)
+# --------------------------------------------------------------------------- #
+def test_output_formats_default_is_md_only():
+    assert Settings().output_formats == ["md"]
+
+
+def test_output_formats_put_roundtrip(tmp_path):
+    path = tmp_path / "settings.json"
+    s = Settings().update({"output_formats": ["md", "txt", "summary"]})
+    s.save(path)
+    loaded = Settings.load(path)
+    assert loaded.output_formats == ["md", "txt", "summary"]
+
+
+def test_output_formats_ignores_unknowns_and_forces_md():
+    # Unknown items dropped; "md" always present even when omitted.
+    s = Settings(output_formats=["txt", "bogus", "mp3"])
+    assert s.output_formats == ["md", "txt", "mp3"]
+    assert Settings(output_formats=[]).output_formats == ["md"]
+
+
+def test_output_formats_dedupes_preserving_order():
+    s = Settings(output_formats=["mp3", "mp3", "md", "txt"])
+    assert s.output_formats == ["mp3", "md", "txt"]
+
+
+def test_output_formats_in_redacted_and_no_secret_leak():
+    red = Settings(output_formats=["md", "summary"]).redacted(Secrets())
+    assert red["output_formats"] == ["md", "summary"]
+    assert "hf_token" not in red and "gemini_api_key" not in red

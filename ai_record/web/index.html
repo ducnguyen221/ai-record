@@ -23,6 +23,10 @@
         <option value="mic">Mic only (dictation)</option>
         <option value="system">System only</option>
       </select>
+      <div class="output-dd">
+        <button id="c-output" class="toggle-btn compact-output" type="button"
+                aria-haspopup="true" aria-expanded="false" title="Chọn định dạng lưu">Lưu: md</button>
+      </div>
       <button id="c-translate" class="toggle-btn compact-translate" type="button" aria-pressed="false">Dịch</button>
       <div class="status-line inline" id="c-status" title="">
         <span class="dot" id="c-dot" data-state="idle"></span>
@@ -54,6 +58,10 @@
       </select>
 
       <button id="x-toggle" class="rec-btn small" type="button" disabled>Start</button>
+      <div class="output-dd">
+        <button id="x-output" class="toggle-btn" type="button"
+                aria-haspopup="true" aria-expanded="false" title="Chọn định dạng lưu">Lưu: md</button>
+      </div>
       <button id="x-translate" class="toggle-btn" type="button" aria-pressed="false">Dịch</button>
 
       <div class="status-line inline" id="x-status" title="">
