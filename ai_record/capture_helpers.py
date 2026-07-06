@@ -20,6 +20,8 @@ def build_and_start(
     mode: str = "meeting",
     sources: list[str] | None = None,
     devices: dict[str, str | None] | None = None,
+    *,
+    ephemeral: bool = False,
 ) -> tuple[str, dict]:
     from .audio.capture import CaptureManager
     from .pipeline import Pipeline
@@ -29,7 +31,9 @@ def build_and_start(
 
     settings = state.settings
     preset = resolve_preset(settings)
-    session = state.store.create(title, mode=mode)
+    # Ephemeral ("Không lưu"): the session lives only in memory — no directory,
+    # no transcript/WAV/summary files anywhere under the sessions root.
+    session = state.store.create(title, mode=mode, persist=not ephemeral)
 
     from .audio.segmenter import SourceEpoch
 
@@ -58,7 +62,7 @@ def build_and_start(
     enabled = tuple(s for s in ("them", "you") if not sources or s in sources) or ("them", "you")
 
     raw_you = raw_them = None
-    if settings.persist_audio:
+    if settings.persist_audio and not ephemeral:
         if "you" in enabled:
             raw_you = RawSegmentWriter(session.dir, "you", settings.raw_segment_seconds, settings)
         if "them" in enabled:
@@ -98,4 +102,5 @@ def build_and_start(
     state.pipeline = pipeline
     state.capture = capture
     state.active_session_id = session.session_id
+    state.active_ephemeral = bool(ephemeral)
     return session.session_id, sources

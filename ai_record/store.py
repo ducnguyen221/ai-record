@@ -457,6 +457,14 @@ class SessionStore:
         self._locks_guard = threading.Lock()
         self._seq: dict[str, int] = {}
         self._fsync_last: dict[str, float] = {}
+        # Ephemeral ("Không lưu") sessions live ENTIRELY in memory: no directory,
+        # no jsonl/md/wav/summary — nothing under ``self.root`` (SPEC ephemeral mode).
+        # Every persistence method short-circuits for these ids; readers serve the
+        # in-memory copies so the live UI (WS catch-up / summarize) still works.
+        self._ephemeral_ids: set[str] = set()
+        self._ephemeral_records: dict[str, list[UtteranceRecord]] = {}
+        self._ephemeral_meta: dict[str, SessionMeta] = {}
+        self._ephemeral_patches: dict[str, dict[int, dict[str, Any]]] = {}
 
     # -- locks ------------------------------------------------------------- #
     def _lock(self, session_id: str) -> RWLock:
@@ -509,13 +517,44 @@ class SessionStore:
     def _meta_path(self, session_id: str) -> Path:
         return self._dir(session_id) / "meta.json"
 
+    # -- ephemeral --------------------------------------------------------- #
+    def is_ephemeral(self, session_id: str) -> bool:
+        """True if ``session_id`` is an in-memory, never-persisted session."""
+        return session_id in self._ephemeral_ids
+
     # -- create ------------------------------------------------------------ #
-    def create(self, title: str = "meeting", mode: str = "meeting") -> Session:
+    def create(self, title: str = "meeting", mode: str = "meeting", *, persist: bool = True) -> Session:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         session_id = f"{stamp}-{slugify(title)}"
+        s = self.settings
+        if not persist:
+            # Ephemeral: build the SAME SessionMeta but keep it (and its records)
+            # only in memory. Validate the id shape but NEVER create the directory.
+            self._validate_session_id(session_id)
+            meta = SessionMeta(
+                session_id=session_id,
+                title=title or "meeting",
+                created_at=_now_iso(),
+                mode=mode if mode in ("meeting", "dictation") else "meeting",
+                sources={},
+                hardware_preset=getattr(s, "hardware_preset", "") if s else "",
+                translate_enabled=getattr(s, "translate_enabled", False) if s else False,
+                target_lang=getattr(s, "target_lang", "vi") if s else "vi",
+                source_languages=list(getattr(s, "source_languages", []) or []) if s else [],
+                translation_provider=getattr(s, "translation_provider", "nllb") if s else "nllb",
+                diarization_enabled=getattr(s, "diarization_enabled", True) if s else True,
+                diarization_realtime=getattr(s, "diarization_realtime", True) if s else True,
+                summary_provider=getattr(s, "summarizer_provider", "claude_cli") if s else "claude_cli",
+            )
+            self._ephemeral_ids.add(session_id)
+            self._ephemeral_meta[session_id] = meta
+            self._ephemeral_records[session_id] = []
+            self._ephemeral_patches[session_id] = {}
+            self._seq[session_id] = 0
+            # ``dir`` is the path this session WOULD have had — it is never created.
+            return Session(session_id=session_id, dir=str(self.root / session_id), meta=meta)
         d = self._dir(session_id)
         d.mkdir(parents=True, exist_ok=True)
-        s = self.settings
         meta = SessionMeta(
             session_id=session_id,
             title=title or "meeting",
@@ -538,6 +577,11 @@ class SessionStore:
         return Session(session_id=session_id, dir=str(d), meta=meta)
 
     def set_meta_fields(self, session_id: str, fields: dict[str, Any]) -> None:
+        if session_id in self._ephemeral_ids:
+            data = self._ephemeral_meta[session_id].to_dict()
+            data.update(fields)
+            self._ephemeral_meta[session_id] = SessionMeta.from_dict(data)
+            return
         with self._lock(session_id).write():
             meta = self._read_meta(session_id)
             data = meta.to_dict()
@@ -561,6 +605,11 @@ class SessionStore:
 
     def append_utterance(self, rec: UtteranceRecord) -> None:
         sid = rec.session_id
+        if sid in self._ephemeral_ids:
+            with self._lock(sid).write():
+                self._ephemeral_records[sid].append(rec)
+                self._seq[sid] = max(self._seq.get(sid, 0), rec.seq)
+            return
         with self._lock(sid).write():
             with self._jsonl(sid).open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec.to_dict(), ensure_ascii=False) + "\n")
@@ -590,6 +639,10 @@ class SessionStore:
         ``append_utterance`` (review I4). Patches are merged on read and consolidated
         into ``transcript.jsonl`` at ``finalize()``.
         """
+        if session_id in self._ephemeral_ids:
+            with self._patch_lock(session_id):
+                self._ephemeral_patches.setdefault(session_id, {}).setdefault(seq, {}).update(fields)
+            return
         entry: dict[str, Any] = {"seq": seq}
         entry.update(fields)
         path = self._patches_path(session_id)
@@ -600,6 +653,9 @@ class SessionStore:
 
     def _read_patches(self, session_id: str) -> dict[int, dict[str, Any]]:
         """Merge ``patches.jsonl`` into ``{seq: {field: value}}`` (last write wins)."""
+        if session_id in self._ephemeral_ids:
+            with self._patch_lock(session_id):
+                return {seq: dict(fields) for seq, fields in self._ephemeral_patches.get(session_id, {}).items()}
         path = self._patches_path(session_id)
         if not path.exists():
             return {}
@@ -677,6 +733,15 @@ class SessionStore:
         scenario: str | None = None,
         provider: str | None = None,
     ) -> None:
+        if session_id in self._ephemeral_ids:
+            # Ephemeral: never write summary.md; keep the metadata coherent in memory.
+            meta = self._ephemeral_meta[session_id]
+            meta.summarized_at = _now_iso()
+            if scenario is not None:
+                meta.summary_scenario = scenario
+            if provider is not None:
+                meta.summary_provider = provider
+            return
         with self._lock(session_id).write():
             path = self._dir(session_id) / "summary.md"
             if path.exists():
@@ -717,6 +782,9 @@ class SessionStore:
 
     # -- read -------------------------------------------------------------- #
     def _iter_records(self, session_id: str) -> Iterator[UtteranceRecord]:
+        if session_id in self._ephemeral_ids:
+            yield from self._ephemeral_records.get(session_id, [])
+            return
         path = self._jsonl(session_id)
         if not path.exists():
             return
@@ -755,6 +823,13 @@ class SessionStore:
     def delete_session(self, session_id: str) -> None:
         import shutil
 
+        if session_id in self._ephemeral_ids:
+            self._ephemeral_ids.discard(session_id)
+            self._ephemeral_records.pop(session_id, None)
+            self._ephemeral_meta.pop(session_id, None)
+            self._ephemeral_patches.pop(session_id, None)
+            self._seq.pop(session_id, None)
+            return
         with self._lock(session_id).write():
             d = self._dir(session_id)
             if d.exists():
@@ -792,6 +867,13 @@ class SessionStore:
 
     # -- finalize / recovery ---------------------------------------------- #
     def finalize(self, session_id: str) -> None:
+        if session_id in self._ephemeral_ids:
+            # Nothing to persist: no jsonl consolidation, no WAV concat, no outputs.
+            # Just stamp ended_at in memory so status/meta stay coherent.
+            meta = self._ephemeral_meta[session_id]
+            if meta.ended_at is None:
+                meta.ended_at = _now_iso()
+            return
         with self._lock(session_id).write():
             # Consolidate the append-only patches into transcript.jsonl (SPEC.md §5.7):
             # merge patches, rewrite the canonical jsonl + md, then drop patches.jsonl.
@@ -992,6 +1074,8 @@ class SessionStore:
         )
 
     def _safe_meta_dict(self, session_id: str) -> dict[str, Any]:
+        if session_id in self._ephemeral_ids:
+            return self._ephemeral_meta[session_id].to_dict()
         path = self._meta_path(session_id)
         if not path.exists():
             return {}
@@ -1000,6 +1084,8 @@ class SessionStore:
         return {}
 
     def _read_meta(self, session_id: str) -> SessionMeta:
+        if session_id in self._ephemeral_ids:
+            return self._ephemeral_meta[session_id]
         data = self._safe_meta_dict(session_id)
         if not data:
             return SessionMeta(session_id=session_id, title=session_id, created_at=_now_iso())

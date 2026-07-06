@@ -21,6 +21,7 @@
     settings: null,          // last redacted settings object
     consentOk: false,
     recording: false,
+    ephemeral: false,        // "Không lưu" mode: nothing is written to disk
     sessionId: null,
     lastSeq: 0,              // highest durable seq seen (for WS catch-up)
     utterances: new Map(),   // seq -> {record, el}
@@ -103,13 +104,15 @@
   const el = {
     app: $("app"),
     // compact
-    cToggle: $("c-toggle"), cDot: $("c-dot"), cStatusText: $("c-status-text"),
+    cToggle: $("c-toggle"), cEphemeral: $("c-ephemeral"),
+    cDot: $("c-dot"), cStatusText: $("c-status-text"),
     cStatus: $("c-status"), cRecent: $("c-recent"), cExpand: $("c-expand"),
     cInput: $("c-input"), cOutputDev: $("c-output-dev"), cScreen: $("c-screen"),
     cTranslate: $("c-translate"), cFolder: $("c-folder"), cExit: $("c-exit"), cSettings: $("c-settings"),
     // expanded
     expanded: $("expanded"),
     xCollapse: $("x-collapse"), xTitle: $("x-title"), xToggle: $("x-toggle"),
+    xEphemeral: $("x-ephemeral"),
     xDot: $("x-dot"), xStatusText: $("x-status-text"), xStatus: $("x-status"),
     xChips: $("x-chips"), xSearch: $("x-search"), xSettings: $("x-settings"),
     xExit: $("x-exit"),
@@ -285,6 +288,14 @@
     }
     // Degraded-state chips (expanded only).
     el.xChips.textContent = "";
+    // Draft indicator: ephemeral ("Không lưu") mode writes nothing to disk.
+    if (isEphemeralActive()) {
+      const draft = document.createElement("span");
+      draft.className = "chip draft";
+      draft.textContent = "Nháp — không lưu";
+      draft.title = "Phiên nháp: không tạo thư mục, không lưu transcript/audio/summary.";
+      el.xChips.appendChild(draft);
+    }
     const codes = (status && status.degraded_states) || [];
     for (const code of codes) {
       const d = DEGRADED[code];
@@ -311,6 +322,8 @@
     }
     // Lock the device picker buttons while recording.
     for (const dd of deviceDropdowns) dd.btn.disabled = on;
+    // Lock the ephemeral toggle while recording (mode is fixed at Start).
+    for (const btn of [el.cEphemeral, el.xEphemeral]) if (btn) btn.disabled = on;
   }
 
   function refreshToggleEnabled() {
@@ -318,6 +331,56 @@
     for (const btn of [el.cToggle, el.xToggle]) {
       btn.disabled = !enabled;
       btn.title = enabled ? "" : "Acknowledge the consent notice before recording.";
+    }
+  }
+
+  /* ============================ EPHEMERAL ("KHÔNG LƯU") ============================ */
+  // A draft, no-save recording mode: transcribe/translate/summarize live, but NOTHING
+  // is written to disk (no session folder, transcript, WAV, or summary). The two
+  // toggles (compact + expanded) share state.ephemeral. In ephemeral mode the "Mở
+  // thư mục lưu" button + the output-format selector are hidden (no files exist), and
+  // Summary/Analyze route to /api/summarize-text with the client's own transcript.
+  function isEphemeralActive() {
+    // Only the live session can be ephemeral; a saved session opened for browsing is not.
+    return state.ephemeral && !state.openedSessionId;
+  }
+
+  function setEphemeral(on) {
+    // Cannot change mode mid-recording.
+    if (state.recording) return;
+    state.ephemeral = !!on;
+    updateEphemeralUi();
+  }
+
+  function updateEphemeralUi() {
+    const on = !!state.ephemeral;
+    for (const btn of [el.cEphemeral, el.xEphemeral]) {
+      if (!btn) continue;
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.disabled = state.recording;
+    }
+    const active = isEphemeralActive();
+    // Hide/disable the folder buttons — there is nothing to open in ephemeral mode.
+    for (const btn of [el.openFolder, el.cFolder]) {
+      if (!btn) continue;
+      btn.hidden = active;
+      btn.disabled = active;
+    }
+    // Hide the output-format selectors — no artefacts are produced.
+    for (const d of outputDropdowns) {
+      if (d.btn) d.btn.hidden = active;
+    }
+    if (active) closeAllPops();
+    // Save (persist-to-disk) is meaningless in ephemeral mode; refresh result panels.
+    updateResultSaveButtons();
+  }
+
+  // Keep the Summary/Analyze "Lưu" buttons hidden while ephemeral (no session dir).
+  function updateResultSaveButtons() {
+    if (!isEphemeralActive()) return;
+    for (const kind of ["summary", "analyze"]) {
+      const r = resultEls(kind);
+      if (r.save) r.save.hidden = true;
     }
   }
 
@@ -1054,6 +1117,7 @@
       try {
         const r = await api("/api/capture/stop", { method: "POST" });
         setRecording(false);
+        updateEphemeralUi();
         renderStatus({ recording: false });
         notice("Recording stopped." + (r && r.finalized ? " Session finalized." : ""), "info");
         loadSessionsInto();  // refresh sessions list if drawer open
@@ -1072,15 +1136,17 @@
         // A new live session replaces any opened saved session + its transcript.
         state.openedSessionId = null;
         clearTranscript();
+        const ephemeral = !!state.ephemeral;
         const r = await api("/api/capture/start", {
           method: "POST",
-          body: { title, input_device: req.input_device, output_device: req.output_device },
+          body: { title, input_device: req.input_device, output_device: req.output_device, ephemeral },
         });
         state.sessionId = r && r.session_id;
         setRecording(true);
-        renderStatus({ recording: true });
+        updateEphemeralUi();
+        renderStatus({ recording: true, ephemeral });
         setUiMode("transcript");
-        notice("Recording started.", "info");
+        notice(ephemeral ? "Đang ghi (nháp — không lưu)." : "Recording started.", "info");
       } catch (e) {
         if (e.status === 403) { openConsent(); notice("Please acknowledge consent before recording.", "warn"); }
         else if (e.status === 422) notice("Chọn ít nhất một nguồn để ghi (micro hoặc loa).", "warn");
@@ -1090,6 +1156,9 @@
   }
   el.cToggle.addEventListener("click", toggleRecording);
   el.xToggle.addEventListener("click", toggleRecording);
+  for (const btn of [el.cEphemeral, el.xEphemeral]) {
+    if (btn) btn.addEventListener("click", () => setEphemeral(!state.ephemeral));
+  }
 
   /* ============================ SUMMARY / EXPORT / REDIARIZE ============================ */
   function setToolStatus(text, kind = "info") {
@@ -1293,7 +1362,9 @@
     if (r.meta) r.meta.textContent = [provider, payload && payload.saved ? "đã lưu" : ""].filter(Boolean).join(" · ");
     if (r.fallback) r.fallback.hidden = !(payload && payload.reformat_fallback);
     if (r.save) {
-      r.save.hidden = !markdown;
+      // Ephemeral mode has no session dir to persist into — hide "Lưu" entirely
+      // (the user copies the result instead).
+      r.save.hidden = !markdown || isEphemeralActive();
       r.save.disabled = false;
       r.save.textContent = payload && payload.saved ? "Đã lưu" : "Lưu";
     }
@@ -1304,18 +1375,34 @@
   // Run the summarize scenario for a tab. Cache the payload so switching tabs never
   // re-runs; the "Chạy lại" button forces a re-run.
   async function runResult(kind) {
+    const ephem = isEphemeralActive();
     const sid = activeSessionId();
-    if (!sid) { notice("Bắt đầu hoặc chọn một phiên trước.", "warn"); return; }
+    if (!sid && !ephem) { notice("Bắt đầu hoặc chọn một phiên trước.", "warn"); return; }
     const provider = (state.settings && (state.settings.summarizer_provider || state.settings.summary_provider)) || "claude_cli";
     const scenario = TAB_SCENARIO[kind];
     const r = resultEls(kind);
     if (r.refresh) r.refresh.disabled = true;
     renderLoading(kind);
     try {
-      const payload = await api(`/api/sessions/${encodeURIComponent(sid)}/summarize`, {
-        method: "POST",
-        body: { scenario, provider },
-      });
+      let payload;
+      if (ephem) {
+        // No persisted session: summarize the client's own transcript text directly.
+        const text = buildTranscriptText();
+        if (!text.trim()) {
+          renderResult(kind, { error: "Chưa có nội dung để xử lý." });
+          if (r.refresh) r.refresh.disabled = false;
+          return;
+        }
+        payload = await api("/api/summarize-text", {
+          method: "POST",
+          body: { text, scenario, provider },
+        });
+      } else {
+        payload = await api(`/api/sessions/${encodeURIComponent(sid)}/summarize`, {
+          method: "POST",
+          body: { scenario, provider },
+        });
+      }
       setCache(kind, payload || {});
       renderResult(kind, payload || {});
     } catch (e) {
@@ -1329,6 +1416,10 @@
 
   // Persist the cached result on explicit user approval.
   async function saveResult(kind) {
+    if (isEphemeralActive()) {
+      notice("Chế độ Không lưu: hãy dùng Copy để giữ kết quả.", "warn");
+      return;
+    }
     const sid = activeSessionId();
     const cur = getCache(kind);
     const r = resultEls(kind);
@@ -2557,6 +2648,8 @@
       });
     }
     setToolStatus("");
+    // A saved session is never ephemeral: restore the folder button + save actions.
+    updateEphemeralUi();
     setUiMode("transcript");
   }
 
@@ -2646,6 +2739,9 @@
     if (!st) return;
     if (typeof st.recording === "boolean") setRecording(st.recording);
     if (st.session_id) state.sessionId = st.session_id;
+    // Sync ephemeral mode from the server (e.g. a draft session already running).
+    if (typeof st.ephemeral === "boolean" && st.recording) state.ephemeral = st.ephemeral;
+    updateEphemeralUi();
     renderStatus(st);
   }
 

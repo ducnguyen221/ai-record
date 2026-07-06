@@ -110,11 +110,12 @@ def _stub_start(monkeypatch):
     """Stub ai_record.server._start_capture; return captured args + a fake result."""
     captured: dict = {}
 
-    def fake(state, title, mode="meeting", sources=None, devices=None):
+    def fake(state, title, mode="meeting", sources=None, devices=None, *, ephemeral=False):
         captured["title"] = title
         captured["mode"] = mode
         captured["sources"] = sources
         captured["devices"] = devices
+        captured["ephemeral"] = ephemeral
         return "sess-xyz", {s: True for s in (sources or ["them", "you"])}
 
     monkeypatch.setattr("ai_record.server._start_capture", fake)

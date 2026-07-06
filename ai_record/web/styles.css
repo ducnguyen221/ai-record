@@ -141,6 +141,15 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 }
 .toggle-btn:disabled { opacity: .5; cursor: not-allowed; }
 
+/* Ephemeral ("Không lưu") toggle — warns (amber) when ON so it's clearly a
+   no-save draft mode, distinct from the accent-blue translate/format toggles. */
+.ephemeral-toggle { flex: none; white-space: nowrap; }
+.ephemeral-toggle[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--warn) 16%, var(--surface));
+  border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+  color: var(--warn);
+}
+
 .icon-btn {
   border: 1px solid transparent;
   background: transparent;
@@ -441,6 +450,13 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 }
 .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
 .chip.info { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); background: var(--accent-weak); }
+/* "Nháp — không lưu" badge for ephemeral recording (amber, matches the toggle). */
+.chip.draft {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 14%, var(--surface));
+  font-weight: 600;
+}
 
 /* ---------- Expanded-view content modes (change #7) ---------- */
 /* The header is identical in both modes; only the area below swaps. */

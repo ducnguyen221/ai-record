@@ -344,12 +344,19 @@ def build_summary(
     secrets: Secrets | None = None,
     *,
     provider_impl: Summarizer | None = None,
+    transcript_text: str | None = None,
 ) -> SummaryResult:
     """Produce a summary for a session (SPEC.md §5.6, addendum §E2).
 
     ``session_data`` has ``.utterances`` (records) and ``.meta``. For ``reformat`` the
     original text is fed (so the integrity guard can verify verbatim presence) and, on
     any verbatim miss, a deterministic reformat replaces the model output.
+
+    ``transcript_text`` lets a caller pass an ALREADY-assembled transcript (e.g. the
+    ephemeral ``/api/summarize-text`` path, which has no session records) instead of
+    assembling one from ``session_data.utterances``. When given, the per-utterance
+    ``reformat`` verbatim guard is a no-op (no records to check) and the model output
+    is used as-is — same prompts, provider, hardening, timeouts, and response shape.
     """
     scenario = scenario or "reformat"
     provider = provider or settings.summarizer_provider
@@ -358,7 +365,10 @@ def build_summary(
 
     prompt = scenario_prompt(scenario, settings)
     use_translation = settings.summary_use_translation and scenario != "reformat"
-    transcript = assemble_transcript(records, use_translation=use_translation)
+    if transcript_text is not None:
+        transcript = transcript_text
+    else:
+        transcript = assemble_transcript(records, use_translation=use_translation)
 
     impl = provider_impl or make_provider(provider, settings, secrets)
 

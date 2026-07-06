@@ -83,6 +83,9 @@ class AppState:
         self.pipeline = None
         self.capture = None
         self.active_session_id: str | None = None
+        # True while the active capture is ephemeral ("Không lưu"): nothing is
+        # written to disk and the UI shows a "Nháp — không lưu" indicator.
+        self.active_ephemeral: bool = False
         # Offline re-diarization progress, keyed by session id (SPEC.md §5.5 tier 2).
         self.rediarize_state: dict[str, dict] = {}
         self._rediarize_threads: dict[str, Any] = {}
@@ -239,6 +242,7 @@ def create_app(state: AppState) -> FastAPI:
         mode = body.get("mode") or "meeting"
         if mode not in ("meeting", "dictation"):
             mode = "meeting"
+        ephemeral = bool(body.get("ephemeral", False))
 
         devices: dict[str, str | None] | None = None
         sources = body.get("sources")
@@ -268,10 +272,10 @@ def create_app(state: AppState) -> FastAPI:
             if not sources:
                 raise HTTPException(status_code=422, detail="sources must include 'you' and/or 'them'")
         try:
-            session_id, opened = _start_capture(state, title, mode, sources, devices)
+            session_id, opened = _start_capture(state, title, mode, sources, devices, ephemeral=ephemeral)
         except CaptureError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
-        return {"session_id": session_id, "sources": opened}
+        return {"session_id": session_id, "sources": opened, "ephemeral": ephemeral}
 
     @app.post("/api/capture/stop", dependencies=dep)
     async def stop() -> dict:
@@ -376,6 +380,50 @@ def create_app(state: AppState) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc))
         # Preview only: DO NOT persist summary.md here. The user reviews the result and
         # explicitly saves it via POST /summary/save (Feature 3). No "saved" broadcast.
+        return {
+            "markdown": result.markdown,
+            "scenario": result.scenario,
+            "provider": result.provider,
+            "reformat_fallback": result.reformat_fallback,
+        }
+
+    @app.post("/api/summarize-text", dependencies=dep)
+    async def summarize_text(body: dict | None = None) -> Any:
+        """Summarize/Analyze a transcript passed as TEXT — no session read/write.
+
+        Used by the ephemeral ("Không lưu") UI, where there is no persisted session:
+        the client sends its own transcript text. Same scenarios, same provider
+        default, same hardening/timeouts, and the same
+        ``{markdown, scenario, provider, reformat_fallback}`` response as the
+        per-session endpoint. Input is capped at ``settings.summary_max_chars``.
+        """
+        from .store import SessionData, SessionMeta, _now_iso
+        from .summarizer import SummarizerError, SummarizerUnavailable, build_summary
+
+        body = body or {}
+        text = body.get("text")
+        if not text or not str(text).strip():
+            raise HTTPException(status_code=422, detail="text is required")
+        text = str(text)
+        max_chars = state.settings.summary_max_chars
+        if len(text) > max_chars:
+            raise HTTPException(status_code=422, detail=f"text too long (max {max_chars} chars)")
+        scenario = body.get("scenario") or "reformat"
+        provider = body.get("provider") or state.settings.summarizer_provider
+        # A minimal, record-less SessionData: build_summary uses ``transcript_text``
+        # directly and needs only ``.meta`` (for the — here unused — deterministic path).
+        meta = SessionMeta(session_id="ephemeral", title="ephemeral", created_at=_now_iso())
+        data = SessionData(meta=meta, utterances=[], summary=None)
+        try:
+            result = build_summary(
+                data, scenario, provider, state.settings, state.secrets, transcript_text=text
+            )
+        except SummarizerUnavailable as exc:
+            return JSONResponse(status_code=503, content={"error": str(exc)})
+        except SummarizerError as exc:
+            return JSONResponse(status_code=502, content={"error": str(exc)})
+        except ValueError as exc:  # unknown scenario
+            raise HTTPException(status_code=422, detail=str(exc))
         return {
             "markdown": result.markdown,
             "scenario": result.scenario,
@@ -634,6 +682,7 @@ def _status(state: AppState) -> dict:
     base = {
         "recording": state.pipeline is not None,
         "session_id": state.active_session_id,
+        "ephemeral": state.active_ephemeral,
         "preset": resolve_preset(state.settings).name,
         "effective_model": "",
         "ladder_step": 0,
@@ -663,11 +712,13 @@ def _start_capture(
     mode: str = "meeting",
     sources: list[str] | None = None,
     devices: dict[str, str | None] | None = None,
+    *,
+    ephemeral: bool = False,
 ) -> tuple[str, dict]:
     """Build the pipeline + capture manager and start recording (real hardware path)."""
     from .capture_helpers import build_and_start
 
-    return build_and_start(state, title, mode, sources, devices)
+    return build_and_start(state, title, mode, sources, devices, ephemeral=ephemeral)
 
 
 def _start_rediarize(state: AppState, sid: str) -> None:
@@ -708,6 +759,7 @@ def _start_rediarize(state: AppState, sid: str) -> None:
 
 def _stop_capture(state: AppState) -> str | None:
     sid = state.active_session_id
+    ephemeral = state.active_ephemeral
     if state.capture is not None:
         with _suppress():
             state.capture.stop()
@@ -717,14 +769,21 @@ def _stop_capture(state: AppState) -> str | None:
     if sid is not None:
         with _suppress():
             state.store.finalize(sid)
-        # Auto AI-summary at session end (opt-in via output_formats). Runs in a daemon
-        # thread so Stop / window-close stays responsive; guarded so nothing here can
-        # crash the stop path.
-        with _suppress():
-            _maybe_autosummary(state, sid)
+        if ephemeral:
+            # Ephemeral: nothing on disk, so no auto-summary artefact. Drop the
+            # in-memory session entirely so nothing lingers ("Không lưu").
+            with _suppress():
+                state.store.delete_session(sid)
+        else:
+            # Auto AI-summary at session end (opt-in via output_formats). Runs in a
+            # daemon thread so Stop / window-close stays responsive; guarded so
+            # nothing here can crash the stop path.
+            with _suppress():
+                _maybe_autosummary(state, sid)
     state.pipeline = None
     state.capture = None
     state.active_session_id = None
+    state.active_ephemeral = False
     return sid
 
 
