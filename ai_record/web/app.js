@@ -1638,6 +1638,17 @@
   el.openFolder.addEventListener("click", openFolder);
   if (el.cFolder) el.cFolder.addEventListener("click", openFolder);
 
+  // The whole header is a window drag-region (pywebview). Stop mousedown on the actual
+  // CONTROLS so pressing them clicks instead of dragging; every other pixel of the header
+  // (gaps, spacer, status, title area) drags the window. "Kéo cả header, trừ các nút."
+  const _dragOptOut = 'button, input, select, textarea, a, label, [role="button"], [class*="-pop"]';
+  for (const barSel of [".compact-toolbar", ".ex-header"]) {
+    const bar = document.querySelector(barSel);
+    if (bar) bar.addEventListener("mousedown", (e) => {
+      if (e.target.closest(_dragOptOut)) e.stopPropagation();
+    });
+  }
+
   // Session title -> PUT settings? Title belongs to the session; persist on blur if recording.
   el.xTitle.addEventListener("change", () => {
     // Title is captured at start; here we just keep it local. Server owns session title.

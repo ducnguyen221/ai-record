@@ -204,11 +204,13 @@ def main() -> None:
             _api = _WindowApi()
             _icon = str(Path(__file__).resolve().parent / "assets" / "ai-record.ico")
             _apply_windows_taskbar_icon(_icon, "AI Record")
-            # Only elements carrying `.pywebview-drag-region` move the window, and only
-            # when they are the DIRECT click target — so buttons inside the header still
-            # click and the transcript area is free for text selection.
+            # The whole header (which carries `.pywebview-drag-region`) drags the window:
+            # a mousedown anywhere under it moves the window (DIRECT_TARGET_ONLY=False =
+            # any classed ANCESTOR counts, not just the exact target). The buttons opt out
+            # in the UI by stopping mousedown propagation, so they click instead of drag,
+            # and the transcript (no drag class) stays free for text selection.
             try:
-                webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = True
+                webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = False
             except Exception:
                 log.debug("could not set DRAG_REGION_DIRECT_TARGET_ONLY", exc_info=True)
             _api._window = webview.create_window(
