@@ -204,22 +204,21 @@ def main() -> None:
             _api = _WindowApi()
             _icon = str(Path(__file__).resolve().parent / "assets" / "ai-record.ico")
             _apply_windows_taskbar_icon(_icon, "AI Record")
-            # The whole header (which carries `.pywebview-drag-region`) drags the window:
-            # a mousedown anywhere under it moves the window (DIRECT_TARGET_ONLY=False =
-            # any classed ANCESTOR counts, not just the exact target). The buttons opt out
-            # in the UI by stopping mousedown propagation, so they click instead of drag,
-            # and the transcript (no drag class) stays free for text selection.
+            # A full-header drag underlay (`.pywebview-drag-region`, z-index below the
+            # buttons) is the click target on every non-button pixel, so the whole header
+            # drags while the buttons (above it) click. DIRECT_TARGET_ONLY=True means only
+            # that underlay drags — never a button that merely has it as an ancestor.
             try:
-                webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = False
+                webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = True
             except Exception:
                 log.debug("could not set DRAG_REGION_DIRECT_TARGET_ONLY", exc_info=True)
             _api._window = webview.create_window(
                 "AI Record",
                 url,
                 js_api=_api,
-                width=560,
+                width=700,
                 height=250,          # compact size; tall enough that the Translate popover fits w/o scroll (matches app.js)
-                min_size=(380, 120),
+                min_size=(660, 120),  # never so narrow that toolbar icons (through the ✕) get clipped
                 frameless=True,
                 on_top=True,
                 resizable=True,

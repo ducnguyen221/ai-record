@@ -196,7 +196,7 @@
       const hasTranscript = state.recording || state.openedSessionId || state.utterances.size > 0;
       setUiMode(hasTranscript ? "transcript" : "browser");
     } else {
-      requestResize(560, 250);
+      requestResize(700, 250);
     }
   }
 
@@ -1637,17 +1637,8 @@
   registerCopyDropdown(el.cCopy);
   el.openFolder.addEventListener("click", openFolder);
   if (el.cFolder) el.cFolder.addEventListener("click", openFolder);
-
-  // The whole header is a window drag-region (pywebview). Stop mousedown on the actual
-  // CONTROLS so pressing them clicks instead of dragging; every other pixel of the header
-  // (gaps, spacer, status, title area) drags the window. "Kéo cả header, trừ các nút."
-  const _dragOptOut = 'button, input, select, textarea, a, label, [role="button"], [class*="-pop"]';
-  for (const barSel of [".compact-toolbar", ".ex-header"]) {
-    const bar = document.querySelector(barSel);
-    if (bar) bar.addEventListener("mousedown", (e) => {
-      if (e.target.closest(_dragOptOut)) e.stopPropagation();
-    });
-  }
+  // (Header dragging is handled purely by the .header-drag underlay + z-index in CSS;
+  // no JS needed — the underlay is the click target on every non-button pixel.)
 
   // Session title -> PUT settings? Title belongs to the session; persist on blur if recording.
   el.xTitle.addEventListener("change", () => {
