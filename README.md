@@ -62,12 +62,23 @@ acknowledged.
 - **FastAPI server** on `127.0.0.1` with per-launch token auth, Origin allow-list,
   a server-side consent gate, REST control + a live WebSocket (bounded per-client
   queues, `since_seq` catch-up).
-- **Desktop UI** (pywebview) with a first-run consent modal, preflight screen, a
-  compact icon bar (mic + speaker **device dropdowns** with a live green dot,
-  translate From→To popover, output-format selector, folder, settings, expand, close)
-  and an expandable view with three tabs — **Transcript / Summary / Analyze** — plus
-  search + settings. The window is **resizable** (a taller window shows more transcript
-  lines) and clicking the logo opens the website.
+- **Desktop UI** (pywebview) with a first-run consent modal, preflight screen, and a
+  **frameless window you drag by its top header** (a tap on a button still clicks) and
+  **resize from any edge or corner** — a taller window shows more transcript lines, and
+  clicking the logo opens the website. The compact icon bar (sized so every icon fits at
+  the default width) holds a **Record** button, a **Listening** toggle (no-save mode,
+  below), mic + speaker **device dropdowns** with a live green dot, a translate From→To
+  popover, a **Copy** control (dropdown: text only / with speakers), the output-format
+  selector, folder, settings, expand and close. The expandable view adds three tabs —
+  **Transcript / Summary / Analyze** — plus search. Transcript text is **selectable**
+  (highlight any lines + Ctrl+C to copy elsewhere) and a **"Văn bản ⇄ Hội thoại"** toggle
+  flips the Transcript tab between the dialogue view (speaker rows) and a plain-text block.
+- **Listening mode (ephemeral, no-save)**: next to **Record**, the **Listening** toggle
+  records, transcribes, translates and can run Summary/Analyze **entirely in memory** — it
+  writes **nothing to disk** (no session folder under `records\`, no transcript/audio/
+  summary files), for quickly turning speech into text you copy elsewhere. While it's on,
+  the app hides the open-folder + save-format controls and shows a **"Listening — không
+  lưu"** indicator; Summary runs on the in-memory transcript.
 - **Incomplete-session recovery** on startup: offline-transcribe the untranscribed
   audio tail of a session that never finalized.
 
@@ -110,6 +121,22 @@ Sessions are written **inside the app folder** at
 `%LOCALAPPDATA%\ai-record\settings.json` and the runtime log at
 `%LOCALAPPDATA%\ai-record\ai-record.log`; secrets (HF token, Gemini key) live in
 Windows Credential Manager via `keyring`, never in the JSON.
+
+## Settings highlights
+
+- **Kết nối AI (per-machine sign-in).** Shows connection status for each provider —
+  **Claude CLI / Codex CLI / Gemini / Ollama** — with **Đăng nhập** (launches that CLI's
+  own login on this machine) and **Kiểm tra** (test) buttons. **The app embeds no
+  credentials and never stores, reads or shares them:** each machine connects with its
+  own account — the app just invokes the local `claude`/`codex` CLI (which holds its own
+  login), Gemini uses a key in the OS keychain, and Ollama is fully offline. Installing
+  the app on another machine leaks nothing from this one.
+- **Prompt AI (Summary / Analyze).** Two editable text areas — the reformat and analyze
+  instructions — pre-filled with strong defaults, each with a **Khôi phục mặc định**
+  reset, so you can tune how the AI summarizes and analyzes.
+- **Whisper model / Compute type.** Left on the preset default, both dropdowns read
+  **"Auto — theo preset (large-v3 / int8_float16)"** — the app uses the GPU preset, not a
+  tiny model.
 
 ## Test
 

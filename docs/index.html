@@ -466,15 +466,15 @@
       <article class="feat wide reveal">
         <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v4"/><path d="M8 22h8"/></svg></div>
         <h3>Thu hệ thống + mic cùng lúc</h3>
-        <p>Bắt cả tiếng loa (WASAPI loopback) khi họp Teams, Zoom hay Meet, kèm giọng mic của bạn. Hoặc bật chế độ đọc-chép chỉ với mic, không cần cuộc họp nào.</p>
-        <span class="kbd">Meeting · Dictation</span>
+        <p>Bắt cả tiếng loa (WASAPI loopback) khi họp Teams, Zoom hay Meet, kèm giọng mic của bạn. Hoặc bật chế độ đọc-chép chỉ với mic, không cần cuộc họp nào. Nút <b>Listening</b> cho chế độ tạm thời: nghe → chữ ngay nhưng <b>không lưu gì xuống đĩa</b>.</p>
+        <span class="kbd">Record · Listening · Dictation</span>
       </article>
 
       <article class="feat wide reveal">
         <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h2l2-6 4 14 3-9 2 4h3"/></svg></div>
         <h3>Transcribe thời gian thực</h3>
-        <p>faster-whisper chạy trên GPU chuyển giọng nói thành chữ ngay khi bạn nói, cho tiếng Việt và nhiều ngôn ngữ khác. Câu chữ hiện lên gần như tức thì.</p>
-        <span class="kbd">faster-whisper · GPU</span>
+        <p>faster-whisper chạy trên GPU chuyển giọng nói thành chữ ngay khi bạn nói, cho tiếng Việt và nhiều ngôn ngữ khác. Chữ <b>bôi đen được</b> để copy đi, và đổi được giữa dạng hội thoại và văn bản liền khối.</p>
+        <span class="kbd">faster-whisper · GPU · chọn &amp; copy</span>
       </article>
 
       <article class="feat reveal">
@@ -492,14 +492,14 @@
       <article class="feat reveal">
         <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M5 3h9l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M8 12h8"/><path d="M8 16h6"/></svg></div>
         <h3>Tóm tắt &amp; Phân tích AI</h3>
-        <p>Tab <b>Summary</b> gom nhóm ý và giữ nguyên cách diễn đạt; tab <b>Analyze</b> phân tích tổng quan cùng câu hỏi/rủi ro. Mặc định chạy trên <b>Qwen 2.5-7B local (Ollama)</b> — riêng tư, offline; đổi sang Claude, Codex hay Gemini trong Settings.</p>
+        <p>Tab <b>Summary</b> gom nhóm ý và giữ nguyên cách diễn đạt; tab <b>Analyze</b> phân tích tổng quan cùng câu hỏi/rủi ro. Mặc định chạy trên <b>Qwen 2.5-7B local (Ollama)</b> — riêng tư, offline; đổi sang Claude, Codex hay Gemini trong Settings. Mỗi máy tự đăng nhập bằng tài khoản của nó — <b>app không giữ, không đọc, không chia sẻ khoá</b>.</p>
       </article>
 
       <article class="feat full reveal">
         <div>
           <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></svg></div>
           <h3>100% cục bộ và riêng tư</h3>
-          <p>Âm thanh không bao giờ rời khỏi máy. Nghe, chuyển chữ, dịch và tách người đều chạy offline — và với Qwen local mặc định thì cả Tóm tắt/Phân tích AI cũng 100% trên máy. Chỉ khi bạn tự đổi sang model cloud thì phần văn bản mới được gửi đi. Đầu ra mặc định là bản <code style="font-family:var(--mono);font-size:.85em">.md</code>, tuỳ chọn kèm <code style="font-family:var(--mono);font-size:.85em">.txt</code>, <code style="font-family:var(--mono);font-size:.85em">.mp3</code> và bản tóm tắt AI.</p>
+          <p>Âm thanh không bao giờ rời khỏi máy. Nghe, chuyển chữ, dịch và tách người đều chạy offline — và với Qwen local mặc định thì cả Tóm tắt/Phân tích AI cũng 100% trên máy. Chỉ khi bạn tự đổi sang model cloud thì phần văn bản mới được gửi đi, và mỗi máy đăng nhập bằng tài khoản riêng — <b>app không nhúng hay lưu khoá nào</b>. Cần nhanh gọn thì bật <b>Listening</b>: nghe → chữ mà <b>không ghi gì xuống đĩa</b>. Đầu ra mặc định là bản <code style="font-family:var(--mono);font-size:.85em">.md</code>, tuỳ chọn kèm <code style="font-family:var(--mono);font-size:.85em">.txt</code>, <code style="font-family:var(--mono);font-size:.85em">.mp3</code> và bản tóm tắt AI.</p>
         </div>
         <div class="privacy-tags">
           <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Nghe · trên máy</span>
@@ -507,6 +507,7 @@
           <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Dịch · trên máy</span>
           <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Tách người · trên máy</span>
           <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Tóm tắt · Phân tích · Qwen local</span>
+          <span class="ptag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>Listening · không lưu xuống đĩa</span>
         </div>
       </article>
     </div>
