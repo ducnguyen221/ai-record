@@ -122,19 +122,11 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   cursor: auto;
 }
 
-/* Full-header drag underlay: covers every pixel of the toolbar, sits BELOW the
-   controls. Buttons/inputs/logo are lifted above it (z-index:1) so they click;
-   everything else (gaps, wrappers, spacer, status) sits over the underlay and
-   drags the window. Popovers (z-index:40) still float above both. */
+/* The whole header is a pywebview drag region (class on the toolbars). A mousedown
+   anywhere under it moves the window; a plain tap still clicks the button underneath.
+   No underlay/z-index needed — dragging is decided by the classed ANCESTOR, so the
+   dense icon row drags as consistently as the empty gaps. */
 .compact-toolbar, .ex-header { position: relative; }
-.header-drag { position: absolute; inset: 0; z-index: 0; }
-.compact-toolbar > button, .compact-toolbar .rec-btn, .compact-toolbar .app-logo,
-.compact-toolbar button, .compact-toolbar input, .compact-toolbar select,
-.ex-header > button, .ex-header .rec-btn, .ex-header .app-logo,
-.ex-header button, .ex-header input, .ex-header select {
-  position: relative;
-  z-index: 1;
-}
 
 /* ============================ BUTTONS ============================ */
 .btn {

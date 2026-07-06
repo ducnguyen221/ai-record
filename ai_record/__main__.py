@@ -204,12 +204,13 @@ def main() -> None:
             _api = _WindowApi()
             _icon = str(Path(__file__).resolve().parent / "assets" / "ai-record.ico")
             _apply_windows_taskbar_icon(_icon, "AI Record")
-            # A full-header drag underlay (`.pywebview-drag-region`, z-index below the
-            # buttons) is the click target on every non-button pixel, so the whole header
-            # drags while the buttons (above it) click. DIRECT_TARGET_ONLY=True means only
-            # that underlay drags — never a button that merely has it as an ancestor.
+            # The whole header (`.pywebview-drag-region` on the toolbars) is a drag
+            # surface: a mousedown ANYWHERE under it moves the window (False = a classed
+            # ANCESTOR counts, so the packed icon row drags too, not just the gaps). A
+            # plain tap still fires the button's click; only press-and-move drags. The
+            # transcript isn't under the header, so it stays free for text selection.
             try:
-                webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = True
+                webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = False
             except Exception:
                 log.debug("could not set DRAG_REGION_DIRECT_TARGET_ONLY", exc_info=True)
             _api._window = webview.create_window(

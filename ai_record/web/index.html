@@ -22,8 +22,6 @@
   <section id="compact" class="compact" aria-label="Recorder">
     <!-- All controls on ONE top row -->
     <div class="compact-toolbar pywebview-drag-region">
-      <!-- Full-width drag underlay behind the controls: every non-button pixel drags. -->
-      <div class="header-drag pywebview-drag-region" aria-hidden="true"></div>
       <img class="app-logo" src="/static/logo.png" alt="AI Record" draggable="false"
            title="Mở website AI Record" role="button" tabindex="0">
       <button id="c-toggle" class="rec-btn small" type="button" disabled>Record</button>
@@ -134,8 +132,6 @@
   <!-- ONE toolbar; the area under the header swaps between browser + transcript modes. -->
   <section id="expanded" class="expanded" aria-label="Session" data-mode="browser" hidden>
     <header class="ex-header pywebview-drag-region">
-      <!-- Full-width drag underlay behind the controls: every non-button pixel drags. -->
-      <div class="header-drag pywebview-drag-region" aria-hidden="true"></div>
       <img class="app-logo" src="/static/logo.png" alt="AI Record" draggable="false"
            title="Mở website AI Record" role="button" tabindex="0">
 
