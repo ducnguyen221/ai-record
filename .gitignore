@@ -35,3 +35,6 @@ docs/reviews/
 
 # meeting records now live inside the app folder (user request)
 records/
+
+# stray WebView2 cache when %SystemDrive% env var is unexpanded
+%SystemDrive%/
