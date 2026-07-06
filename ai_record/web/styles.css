@@ -103,6 +103,25 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 
 ::selection { background: var(--accent-weak); }
 
+/* ============================ WINDOW DRAG ============================ */
+/* pywebview moves the window only when the user mousedowns on an element that
+   DIRECTLY carries this class (children do not drag). We put it on the header
+   containers + their inert empty children (spacer / status line) so the empty
+   header space is a drag handle, while buttons, inputs, and the transcript stay
+   free for clicks + text selection. Keep interactive fields selectable. */
+.pywebview-drag-region {
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.pywebview-drag-region input,
+.pywebview-drag-region textarea,
+.pywebview-drag-region select {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: auto;
+}
+
 /* ============================ BUTTONS ============================ */
 .btn {
   border: 1px solid var(--border-strong);
@@ -352,7 +371,17 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 .output-opt input:disabled { cursor: default; }
 .output-opt input:disabled + span { color: var(--text-muted); }
 .compact-body { flex: 1 1 auto; min-width: 0; }  /* legacy (unused after toolbar redesign) */
-.compact .recent { flex: 1 1 auto; min-height: 0; }   /* transcript fills the width + remaining height */
+/* Transcript zone: fills remaining height and reads as a distinct, darker panel
+   (like the expanded transcript) set apart from the white toolbar above. Still
+   scroll-free/clipped — the bottom-anchored .recent column hides overflow. */
+.compact .recent {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+}
 
 .status-line { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .status-line.inline { margin-bottom: 0; }
@@ -564,7 +593,16 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 .view-tab:disabled { opacity: .45; cursor: not-allowed; }
 
 /* Copy dropdown */
-.copy-dd { position: relative; display: inline-flex; }
+.copy-dd { position: relative; display: inline-flex; align-items: center; flex: none; }
+/* Header copy button: match the 32px control height of the other header controls. */
+.ex-header .copy-dd .btn {
+  height: 32px;
+  padding: 0 11px;
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .copy-pop {
   position: absolute;
   top: calc(100% + 6px);

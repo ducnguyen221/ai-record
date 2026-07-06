@@ -126,7 +126,7 @@
     // transcript-mode actions + three-view tabs
     transcriptPanel: $("transcript-panel"),
     tabTranscript: $("tab-transcript"), tabSummary: $("tab-summary"), tabAnalyze: $("tab-analyze"),
-    copyTranscript: $("copy-transcript"),
+    copyTranscript: $("copy-transcript"), cCopy: $("c-copy"),
     openFolder: $("open-folder"),
     toolStatus: $("tool-status"),
     // overlays
@@ -292,7 +292,7 @@
     if (isEphemeralActive()) {
       const draft = document.createElement("span");
       draft.className = "chip draft";
-      draft.textContent = "Nháp — không lưu";
+      draft.textContent = "Listening — không lưu";
       draft.title = "Phiên nháp: không tạo thư mục, không lưu transcript/audio/summary.";
       el.xChips.appendChild(draft);
     }
@@ -318,7 +318,7 @@
     state.recording = on;
     for (const btn of [el.cToggle, el.xToggle]) {
       btn.classList.toggle("recording", on);
-      btn.textContent = on ? "● Stop" : "Start";
+      btn.textContent = on ? "● Stop" : "Record";
     }
     // Lock the device picker buttons while recording.
     for (const dd of deviceDropdowns) dd.btn.disabled = on;
@@ -730,9 +730,9 @@
       d.pop.hidden = true;
       d.btn.setAttribute("aria-expanded", "false");
     }
-    if (copyDropdown) {
-      copyDropdown.pop.hidden = true;
-      copyDropdown.btn.setAttribute("aria-expanded", "false");
+    for (const d of copyDropdowns) {
+      d.pop.hidden = true;
+      d.btn.setAttribute("aria-expanded", "false");
     }
   }
 
@@ -1254,9 +1254,12 @@
   }
 
   /* ---- Copy dropdown: "Chỉ văn bản" | "Kèm người nói" ---- */
-  let copyDropdown = null;
-  function registerCopyDropdown() {
-    const btn = el.copyTranscript;
+  // One shared copy behavior attached to EACH copy button that exists (the compact
+  // toolbar icon `#c-copy` and the expanded header `#copy-transcript`). Both open the
+  // same "Chỉ văn bản / Kèm người nói" menu and copy the current transcript, so the
+  // copy logic (buildTranscriptText / buildTranscriptPlainText) lives in one place.
+  const copyDropdowns = [];
+  function registerCopyDropdown(btn) {
     if (!btn) return;
     const wrap = btn.parentNode;  // .copy-dd
     const pop = document.createElement("div");
@@ -1282,7 +1285,7 @@
       if (willOpen) { pop.hidden = false; btn.setAttribute("aria-expanded", "true"); clampPopover(pop); }
     });
     pop.addEventListener("click", (e) => e.stopPropagation());
-    copyDropdown = { btn, pop };
+    copyDropdowns.push({ btn, pop });
   }
 
   /* ============================ THREE-VIEW TABS ============================ */
@@ -1630,7 +1633,8 @@
   }
   if (el.xViewmode) el.xViewmode.addEventListener("click", () =>
     setTranscriptView(state.transcriptView === "plain" ? "dialogue" : "plain"));
-  registerCopyDropdown();
+  registerCopyDropdown(el.copyTranscript);
+  registerCopyDropdown(el.cCopy);
   el.openFolder.addEventListener("click", openFolder);
   if (el.cFolder) el.cFolder.addEventListener("click", openFolder);
 

@@ -204,6 +204,13 @@ def main() -> None:
             _api = _WindowApi()
             _icon = str(Path(__file__).resolve().parent / "assets" / "ai-record.ico")
             _apply_windows_taskbar_icon(_icon, "AI Record")
+            # Only elements carrying `.pywebview-drag-region` move the window, and only
+            # when they are the DIRECT click target — so buttons inside the header still
+            # click and the transcript area is free for text selection.
+            try:
+                webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = True
+            except Exception:
+                log.debug("could not set DRAG_REGION_DIRECT_TARGET_ONLY", exc_info=True)
             _api._window = webview.create_window(
                 "AI Record",
                 url,
@@ -214,6 +221,8 @@ def main() -> None:
                 frameless=True,
                 on_top=True,
                 resizable=True,
+                easy_drag=False,     # don't drag the whole window; only the header (drag-region) does
+                text_select=True,    # allow selecting/copying transcript text (default False injects user-select:none)
             )
             # Blocks until the user closes the window.
             try:
