@@ -242,6 +242,9 @@
                   aria-selected="false" disabled>Analyze</button>
         </div>
 
+        <button id="x-viewmode" class="btn" type="button" aria-pressed="false"
+                title="Chuyển Hội thoại ⇄ Văn bản">📄 Văn bản</button>
+
         <div class="copy-dd">
           <button id="copy-transcript" class="btn" type="button" aria-haspopup="true" aria-expanded="false">
             <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none"
@@ -269,6 +272,9 @@
         <!-- Transcript: always mounted + live (new utterances append even when hidden). -->
         <main class="transcript-wrap" id="panel-transcript">
           <div id="x-transcript" class="transcript" tabindex="0" aria-label="Transcript"></div>
+          <!-- Plain-text view: one selectable block for easy highlight + copy elsewhere. -->
+          <div id="x-transcript-plain" class="transcript-plain" tabindex="0"
+               aria-label="Transcript (văn bản)" hidden></div>
           <button id="x-jump" class="jump-pill" type="button" hidden>Jump to latest ↓</button>
         </main>
 

@@ -660,6 +660,25 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   padding: 8px 0 24px;
 }
 
+/* Free text selection so users can highlight specific lines and Ctrl+C them elsewhere. */
+.transcript, .transcript .utt, .transcript .utt .text, .transcript .utt .tr,
+.transcript-plain { user-select: text; -webkit-user-select: text; }
+
+/* Plain-text view (Hội thoại ⇄ Văn bản toggle): one selectable, scrollable block. */
+.transcript-plain {
+  height: 100%;
+  overflow-y: auto;
+  margin: 0;
+  padding: 12px 14px 24px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  cursor: text;
+}
+
 .utt {
   display: grid;
   grid-template-columns: 78px 130px 1fr;

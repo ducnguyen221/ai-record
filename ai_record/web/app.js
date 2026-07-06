@@ -35,6 +35,7 @@
     modelCatalog: null,      // {default, models, current, installed, ollama_available}
     // --- three-view switcher (Transcript | Summary | Analyze) ---
     tab: "transcript",       // 'transcript' | 'summary' | 'analyze'
+    transcriptView: "dialogue", // 'dialogue' (speaker rows) | 'plain' (selectable text block)
     summaryResult: null,     // cached summarize payload (scenario reformat)
     analyzeResult: null,     // cached summarize payload (scenario analyze)
     // --- new: expanded-view content mode + saved-session browsing ---
@@ -112,7 +113,8 @@
     xDot: $("x-dot"), xStatusText: $("x-status-text"), xStatus: $("x-status"),
     xChips: $("x-chips"), xSearch: $("x-search"), xSettings: $("x-settings"),
     xExit: $("x-exit"),
-    xTranscript: $("x-transcript"), xJump: $("x-jump"),
+    xTranscript: $("x-transcript"), xTranscriptPlain: $("x-transcript-plain"),
+    xViewmode: $("x-viewmode"), xJump: $("x-jump"),
     xInput: $("x-input"), xOutputDev: $("x-output-dev"), xScreen: $("x-screen"),
     xTranslate: $("x-translate"),
     // browser mode
@@ -835,6 +837,7 @@
     trimDom();
     applySearchToRow(row);
     renderRecent();
+    refreshPlainIfActive();
     if (state.autoScroll) scrollToLatest();
   }
 
@@ -859,6 +862,7 @@
     }
     applySearchToRow(row);
     if (isRecentSeq(seq)) renderRecent();
+    refreshPlainIfActive();
   }
 
   function trimDom() {
@@ -1151,6 +1155,28 @@
       .join("\n");
   }
 
+  // --- Dialogue ⇄ Văn bản (plain-text) view for the Transcript tab ---
+  function renderPlainTranscript() {
+    if (el.xTranscriptPlain) el.xTranscriptPlain.textContent = buildTranscriptText() || "";
+  }
+  function refreshPlainIfActive() {
+    if (state.transcriptView === "plain") renderPlainTranscript();
+  }
+  function setTranscriptView(mode) {
+    const plain = mode === "plain";
+    state.transcriptView = plain ? "plain" : "dialogue";
+    if (plain) renderPlainTranscript();
+    if (el.xTranscript) el.xTranscript.hidden = plain;
+    if (el.xTranscriptPlain) el.xTranscriptPlain.hidden = !plain;
+    if (el.xViewmode) {
+      el.xViewmode.setAttribute("aria-pressed", plain ? "true" : "false");
+      el.xViewmode.textContent = plain ? "💬 Hội thoại" : "📄 Văn bản";
+      el.xViewmode.title = plain
+        ? "Về giao diện hội thoại" : "Chuyển sang văn bản thuần (dễ bôi chọn & copy)";
+    }
+    if (!plain && state.autoScroll) scrollToLatest();
+  }
+
   async function copyTranscript(withSpeakers) {
     const text = withSpeakers ? buildTranscriptText() : buildTranscriptPlainText();
     if (!text.trim()) { setToolStatus("Chưa có nội dung để copy.", "warn"); return; }
@@ -1229,6 +1255,8 @@
       if (btn) btn.setAttribute("aria-selected", name === tab ? "true" : "false");
     }
     if (el.transcriptPanel) el.transcriptPanel.dataset.tab = tab;
+    // The Dialogue⇄Text toggle only applies to the live Transcript view.
+    if (el.xViewmode) el.xViewmode.hidden = tab !== "transcript";
     if (tab === "transcript") { scrollToLatest(); return; }
     // Result tab: show the cache, or run it the first time it is opened.
     const cache = getCache(tab);
@@ -1509,6 +1537,8 @@
     if (r.save) r.save.addEventListener("click", () => saveResult(kind));
     if (r.copy) r.copy.addEventListener("click", () => copyResult(kind));
   }
+  if (el.xViewmode) el.xViewmode.addEventListener("click", () =>
+    setTranscriptView(state.transcriptView === "plain" ? "dialogue" : "plain"));
   registerCopyDropdown();
   el.openFolder.addEventListener("click", openFolder);
   if (el.cFolder) el.cFolder.addEventListener("click", openFolder);
