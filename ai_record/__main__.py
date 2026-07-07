@@ -201,7 +201,28 @@ def main() -> None:
                     except Exception:
                         log.debug("open_external failed", exc_info=True)
 
+                def pick_region(self):
+                    """Interactive screen-region selector (Agent A's region_picker).
+                    Returns {"x","y","w","h"} in physical px, or None if the user
+                    cancels or the picker is unavailable. Imported lazily so the
+                    module imports without the picker's deps; failures degrade to None
+                    (the page falls back to a "run inside the app" hint)."""
+                    try:
+                        from . import region_picker
+                        return region_picker.pick_region()
+                    except Exception:
+                        log.debug("pick_region failed", exc_info=True)
+                        return None
+
             _api = _WindowApi()
+            # Per-monitor DPI awareness (Agent A) BEFORE any window exists, so screen
+            # geometry + region picking report true physical pixels on hi-DPI displays.
+            # Lazily imported + guarded: never block startup if the helper is missing.
+            try:
+                from . import screens
+                screens.set_dpi_aware()
+            except Exception:
+                log.debug("set_dpi_aware failed", exc_info=True)
             _icon = str(Path(__file__).resolve().parent / "assets" / "ai-record.ico")
             _apply_windows_taskbar_icon(_icon, "AI Record")
             # The whole header (`.pywebview-drag-region` on the toolbars) is a drag

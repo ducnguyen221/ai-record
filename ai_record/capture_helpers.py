@@ -13,6 +13,18 @@ from .config import resolve_preset
 
 log = logging.getLogger("ai_record.capture_helpers")
 
+# Sentinel resolved lazily at runtime so importing this module never pulls in the
+# (heavy, ffmpeg-backed) video stack. Tests monkeypatch this attribute with a fake
+# manager class; production leaves it ``None`` and the real class is imported on demand.
+VideoCaptureManager = None
+
+
+def _import_video_manager():
+    """Import the real VideoCaptureManager lazily (kept out of module import path)."""
+    from .capture_video import VideoCaptureManager as _VCM
+
+    return _VCM
+
 
 def build_and_start(
     state,
@@ -22,6 +34,7 @@ def build_and_start(
     devices: dict[str, str | None] | None = None,
     *,
     ephemeral: bool = False,
+    video: dict | None = None,
 ) -> tuple[str, dict]:
     from .audio.capture import CaptureManager
     from .pipeline import Pipeline
@@ -103,4 +116,43 @@ def build_and_start(
     state.capture = capture
     state.active_session_id = session.session_id
     state.active_ephemeral = bool(ephemeral)
+
+    # -- video capture (opt-in, best-effort) -------------------------------- #
+    # Started ONLY after audio is up and ONLY when not ephemeral. A video-start
+    # failure NEVER fails the audio session — it is surfaced via ``state.video_errors``.
+    state.video = None
+    state.video_errors = []
+    state.video_skipped = None
+    if video and ephemeral:
+        # Ephemeral ("Không lưu"): nothing is written to disk, so no video is recorded.
+        state.video_skipped = "ephemeral"
+    elif video:
+        try:
+            import subprocess as _sp
+
+            manager_cls = VideoCaptureManager or _import_video_manager()
+            manager = manager_cls(session.dir, video, settings, spawn=_sp.Popen)
+            result = manager.start() or {}
+            state.video = manager
+            state.video_errors = list(result.get("errors") or [])
+            # Record the chosen config into meta (round-trips via SessionMeta.video).
+            state.store.set_meta_fields(
+                session.session_id,
+                {
+                    "video": {
+                        "screen": video.get("screen"),
+                        "camera": video.get("camera"),
+                        "encoder": settings.video_encoder,
+                        "container": settings.video_container,
+                        "screen_fps": settings.video_screen_fps,
+                        "camera_fps": settings.video_camera_fps,
+                        "capture_cursor": settings.video_capture_cursor,
+                    }
+                },
+            )
+        except Exception as exc:  # construction/import/start failure — never fail audio
+            log.warning("video capture failed to start: %s", exc)
+            state.video = None
+            state.video_errors = [str(exc)]
+
     return session.session_id, sources

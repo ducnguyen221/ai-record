@@ -16,6 +16,7 @@ import os
 import secrets as _secrets
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -80,8 +81,16 @@ class AppState:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.clients: set[_Client] = set()
         self.ws_drops = 0
+        # Serializes capture start/stop state transitions so a Stop from the event-loop
+        # thread can't race the main-thread window-close _stop_capture and double-stop
+        # (double .stop() / double CloseHandle) the same recorder/pipeline.
+        self._capture_lock = threading.Lock()
         self.pipeline = None
         self.capture = None
+        # Video-capture manager for the active session (None when no video is recording).
+        self.video = None
+        self.video_errors: list[str] = []
+        self.video_skipped: str | None = None
         self.active_session_id: str | None = None
         # True while the active capture is ephemeral ("Không lưu"): nothing is
         # written to disk and the UI shows a "Nháp — không lưu" indicator.
@@ -230,6 +239,28 @@ def create_app(state: AppState) -> FastAPI:
 
         return _capture.list_audio_devices()
 
+    # -- video devices / region pick (for the video-picker UI) ------------ #
+    @app.get("/api/video-devices", dependencies=dep)
+    async def video_devices() -> dict:
+        """List cameras/displays/windows for the video picker. Guarded: any failure
+        (module absent, no ffmpeg, enumeration error) returns the empty shape."""
+        try:
+            from . import capture_video
+
+            # The dshow probe shells out to ffmpeg with a 15s timeout; offload it so a
+            # slow/hung enumeration can't block the event loop (WS/transcript).
+            return await asyncio.to_thread(capture_video.list_video_targets)
+        except Exception as exc:  # module missing / heavy-dep import / enumeration error
+            log.debug("list_video_targets failed: %s", exc)
+            return {"cameras": [], "displays": [], "windows": [], "ffmpeg_available": False}
+
+    @app.post("/api/region/pick", dependencies=dep)
+    async def region_pick() -> Any:
+        """REST fallback only. The real region pick happens in the pywebview window via
+        ``window.pywebview.api.pick_region()`` (wired by the host); the plain-HTTP route
+        cannot open a native overlay, so it always reports unsupported."""
+        return JSONResponse(status_code=501, content={"unsupported": True})
+
     # -- capture lifecycle ------------------------------------------------ #
     @app.post("/api/capture/start", dependencies=dep)
     async def start(body: dict | None = None) -> dict:
@@ -271,11 +302,28 @@ def create_app(state: AppState) -> FastAPI:
             sources = [s for s in sources if s in ("you", "them")]
             if not sources:
                 raise HTTPException(status_code=422, detail="sources must include 'you' and/or 'them'")
+        # Optional video request (screen and/or camera). Validated → 422 on malformed.
+        video = _validate_video(body.get("video"))
+        # Thread `video` only when present so existing stubs (which don't accept it) work.
+        extra: dict[str, Any] = {"ephemeral": ephemeral}
+        if video is not None:
+            extra["video"] = video
         try:
-            session_id, opened = _start_capture(state, title, mode, sources, devices, ephemeral=ephemeral)
+            # _start_capture busy-waits on recorder startup (up to ~1.5s/recorder) and
+            # touches audio/ffmpeg — offload it so the event loop (WS/transcript) doesn't
+            # freeze while a capture spins up.
+            session_id, opened = await asyncio.to_thread(
+                _start_capture, state, title, mode, sources, devices, **extra
+            )
         except CaptureError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
-        return {"session_id": session_id, "sources": opened, "ephemeral": ephemeral}
+        return {
+            "session_id": session_id,
+            "sources": opened,
+            "ephemeral": ephemeral,
+            "video_errors": list(getattr(state, "video_errors", []) or []),
+            "video_skipped": getattr(state, "video_skipped", None),
+        }
 
     @app.post("/api/capture/stop", dependencies=dep)
     async def stop() -> dict:
@@ -634,6 +682,66 @@ class CaptureError(RuntimeError):
     pass
 
 
+def _validate_video(video: Any) -> dict | None:
+    """Validate the optional ``video`` start-body block; raise 422 on malformed shape.
+
+    Accepts ``null`` (→ None) or ``{"screen": null|{...}, "camera": null|{"device": str}}``.
+    Returns a normalized dict ``{"screen": ...|None, "camera": ...|None}`` or None when
+    nothing is actually requested (both sides null/absent).
+    """
+    if video is None:
+        return None
+    if not isinstance(video, dict):
+        raise HTTPException(status_code=422, detail="video must be an object or null")
+
+    out: dict[str, Any] = {"screen": None, "camera": None}
+
+    screen = video.get("screen")
+    if screen is not None:
+        if not isinstance(screen, dict):
+            raise HTTPException(status_code=422, detail="video.screen must be an object or null")
+        mode = screen.get("mode")
+        if mode not in ("full", "display", "window", "region"):
+            raise HTTPException(status_code=422, detail="video.screen.mode invalid")
+        clean: dict[str, Any] = {"mode": mode}
+        if mode == "display":
+            if screen.get("display_id") is not None:
+                clean["display_id"] = str(screen["display_id"])
+        elif mode == "window":
+            if screen.get("window_hwnd") is not None:
+                clean["window_hwnd"] = str(screen["window_hwnd"])
+        elif mode == "region":
+            region = screen.get("region")
+            if not isinstance(region, dict):
+                raise HTTPException(
+                    status_code=422, detail="video.screen.region required for mode=region"
+                )
+            reg: dict[str, int] = {}
+            for k in ("x", "y", "w", "h"):
+                v = region.get(k)
+                # bool is an int subclass — reject it explicitly.
+                if k not in region or isinstance(v, bool) or not isinstance(v, int):
+                    raise HTTPException(
+                        status_code=422, detail=f"video.screen.region.{k} must be an int"
+                    )
+                reg[k] = int(v)
+            clean["region"] = reg
+        out["screen"] = clean
+
+    camera = video.get("camera")
+    if camera is not None:
+        if not isinstance(camera, dict):
+            raise HTTPException(status_code=422, detail="video.camera must be an object or null")
+        device = camera.get("device")
+        if not isinstance(device, str) or not device:
+            raise HTTPException(status_code=422, detail="video.camera.device must be a string")
+        out["camera"] = {"device": device}
+
+    if out["screen"] is None and out["camera"] is None:
+        return None  # nothing actually requested
+    return out
+
+
 def _origin_of(value: str) -> str:
     """Reduce an Origin/Referer to scheme://host:port."""
     if value == "null":
@@ -690,7 +798,11 @@ def _status(state: AppState) -> dict:
         "dropped_frames": 0,
         "ws_drops": state.ws_drops,
         "sources": {},
+        "video": None,
     }
+    if state.video is not None:
+        with _suppress():
+            base["video"] = state.video.status()
     if state.pipeline is not None:
         base.update(state.pipeline.status())
     if state.capture is not None:
@@ -714,11 +826,17 @@ def _start_capture(
     devices: dict[str, str | None] | None = None,
     *,
     ephemeral: bool = False,
+    video: dict | None = None,
 ) -> tuple[str, dict]:
     """Build the pipeline + capture manager and start recording (real hardware path)."""
     from .capture_helpers import build_and_start
 
-    return build_and_start(state, title, mode, sources, devices, ephemeral=ephemeral)
+    # Hold the capture lock across the whole start so a concurrent Stop can't tear down
+    # half-built state mid-transition (paired with the lock in _stop_capture).
+    with state._capture_lock:
+        return build_and_start(
+            state, title, mode, sources, devices, ephemeral=ephemeral, video=video
+        )
 
 
 def _start_rediarize(state: AppState, sid: str) -> None:
@@ -758,6 +876,14 @@ def _start_rediarize(state: AppState, sid: str) -> None:
 
 
 def _stop_capture(state: AppState) -> str | None:
+    # Serialize with _start_capture and any racing Stop (HTTP thread vs main-thread
+    # window-close): once one caller clears the state to None, the guards below make the
+    # other a no-op, so nothing is stopped / CloseHandle'd twice.
+    with state._capture_lock:
+        return _stop_capture_locked(state)
+
+
+def _stop_capture_locked(state: AppState) -> str | None:
     sid = state.active_session_id
     ephemeral = state.active_ephemeral
     if state.capture is not None:
@@ -766,6 +892,10 @@ def _stop_capture(state: AppState) -> str | None:
     if state.pipeline is not None:
         with _suppress():
             state.pipeline.stop()
+    # Stop video BEFORE finalize so its files are closed/flushed under the session dir.
+    if state.video is not None:
+        with _suppress():
+            state.video.stop()
     if sid is not None:
         with _suppress():
             state.store.finalize(sid)
@@ -782,6 +912,7 @@ def _stop_capture(state: AppState) -> str | None:
                 _maybe_autosummary(state, sid)
     state.pipeline = None
     state.capture = None
+    state.video = None
     state.active_session_id = None
     state.active_ephemeral = False
     return sid

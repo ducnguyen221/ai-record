@@ -328,6 +328,8 @@ _ENUMS: dict[str, tuple[str, ...]] = {
     "summarizer_provider": ("claude_cli", "codex_cli", "gemini", "ollama"),
     "theme": ("auto", "light", "dark"),
     "audio_export_format": ("mp3", "wav"),
+    "video_encoder": ("auto", "h264_nvenc", "libx264"),
+    "video_container": ("mkv", "mp4"),
 }
 
 
@@ -413,6 +415,14 @@ class Settings:
     min_embed_ms: int = 800
     max_speakers: int = 8
     pyannote_model: str = "pyannote/speaker-diarization-3.1"
+
+    # video capture (screen + camera; opt-in per-session via the start body)
+    video_screen_fps: int = 30
+    video_camera_fps: int = 30
+    video_encoder: str = "auto"        # "auto" | "h264_nvenc" | "libx264"
+    video_container: str = "mkv"       # "mkv" | "mp4"
+    video_capture_cursor: bool = True
+    camera_device: str = ""            # default camera device name (empty = none)
 
     # summarization (M4)
     summarizer_provider: str = "ollama"   # local Qwen (qwen2.5:7b) by default — private, offline

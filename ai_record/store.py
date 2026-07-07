@@ -348,6 +348,9 @@ class SessionMeta:
     summarized_at: str | None = None
     rediarized_at: str | None = None
     recovered: bool = False
+    # Chosen video-capture config for this session (empty when no video was recorded).
+    # Round-trips via from_dict/to_dict; older meta.json without it defaults to {}.
+    video: dict = field(default_factory=dict)
     app_version: str = "2.0"
     schema: int = SCHEMA
 
@@ -943,6 +946,8 @@ class SessionStore:
             pass  # leave the canonical wavs (and segments) in place.
         else:
             # Default: md-only. Drop every wav (canonical + per-minute segments) + idx.
+            # NOTE: this targets ONLY ``*.wav`` + ``samples.idx`` — it never touches the
+            # video artefacts (``screen.*`` / ``camera.*``), which are retained always.
             for wav in list(d.glob("*.wav")):
                 with contextlib.suppress(OSError):
                     wav.unlink()

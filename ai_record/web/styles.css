@@ -297,6 +297,56 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 .device-opt.selected .device-check { opacity: 1; }
 .device-name { flex: 1 1 auto; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 
+/* ============================ VIDEO (SCREEN / CAMERA) DROPDOWN ============================ */
+/* Screen/camera capture picker: mirrors the audio device dropdown. ONE popover with
+   two groups (Màn hình / Camera). Green .on-dot when a source is chosen; the icon
+   dims when both are "Tắt"; a calm red tint while capture is actually running. */
+.video-dd { position: relative; display: inline-flex; align-items: center; flex: none; }
+.video-btn { position: relative; }
+.video-btn[aria-expanded="true"] { color: var(--accent); background: var(--accent-weak); }
+.video-btn.source-off { color: var(--text-faint); }
+.video-btn:disabled { opacity: .5; cursor: not-allowed; }
+/* Capture in progress (user-initiated — never framed as stealth). */
+.video-btn.recording { color: var(--rec); }
+
+.video-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 248px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.video-group-label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-faint); font-weight: 650;
+  padding: 6px 9px 2px;
+}
+.video-opt {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left; border: none; background: none;
+  color: var(--text); padding: 7px 9px; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 12.5px;
+}
+.video-opt:hover { background: var(--surface-2); }
+.video-opt.selected { color: var(--accent); font-weight: 600; }
+.video-opt.selected .device-check { opacity: 1; }
+.video-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+.video-hint {
+  font-size: 11.5px; line-height: 1.35; color: var(--text-muted);
+  padding: 6px 9px; margin-bottom: 2px; border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.video-hint.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }
+
 /* ============================ TOOLBAR ICON DROPDOWNS ============================ */
 .output-dd, .translate-dd { position: relative; display: inline-flex; align-items: center; flex: none; }
 
@@ -491,6 +541,13 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
   background: color-mix(in srgb, var(--warn) 14%, var(--surface));
+  font-weight: 600;
+}
+/* "● REC màn hình / camera" — user-initiated screen/camera capture. Calm, not alarmist. */
+.chip.rec {
+  color: var(--rec);
+  border-color: color-mix(in srgb, var(--rec) 40%, var(--border));
+  background: color-mix(in srgb, var(--rec) 12%, var(--surface));
   font-weight: 600;
 }
 

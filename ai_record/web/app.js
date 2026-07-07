@@ -45,6 +45,12 @@
     devices: null,           // {inputs, outputs, available} from /api/audio-devices
     inputSel: null,          // selected input option value ("off" | "id:<id>")
     outputSel: null,         // selected output option value
+    videoDevices: null,      // {cameras, displays, windows, ffmpeg_available} from /api/video-devices
+    // Screen/camera capture selection (both null = no video). Shapes:
+    //   screen: {mode:"full"} | {mode:"display",display_id} | {mode:"window",window_hwnd}
+    //         | {mode:"region",region:{x,y,w,h}}
+    //   camera: {device}
+    videoSel: { screen: null, camera: null },
     sessionsCache: [],       // last /api/sessions payload (for client-side filtering)
     browserSearch: "",
   };
@@ -312,6 +318,36 @@
       chip.title = "Effective STT model" + (status.ladder_step != null ? ` · ladder step ${status.ladder_step}` : "");
       el.xChips.appendChild(chip);
     }
+    // User-initiated screen/camera capture. Calm "● REC" chips near the status line
+    // (never framed as stealth). Also surfaces a mid-session capture error visibly.
+    const v = status && status.video;
+    const screenRec = !!(v && v.screen && v.screen.recording);
+    const cameraRec = !!(v && v.camera && v.camera.recording);
+    if (screenRec) {
+      const chip = document.createElement("span");
+      chip.className = "chip rec";
+      chip.textContent = "● REC màn hình";
+      chip.title = "Bạn đang quay màn hình cho phiên này.";
+      el.xChips.appendChild(chip);
+    }
+    if (cameraRec) {
+      const chip = document.createElement("span");
+      chip.className = "chip rec";
+      chip.textContent = "● REC camera";
+      chip.title = "Bạn đang quay camera cho phiên này.";
+      el.xChips.appendChild(chip);
+    }
+    for (const [src, part] of [["màn hình", v && v.screen], ["camera", v && v.camera]]) {
+      if (part && part.error) {
+        const chip = document.createElement("span");
+        chip.className = "chip warn";
+        chip.textContent = `Quay ${src} lỗi`;
+        chip.title = String(part.error);
+        el.xChips.appendChild(chip);
+      }
+    }
+    // Compact bar has no chip row: tint the screen/camera icon while capturing.
+    for (const vd of videoDropdowns) vd.btn.classList.toggle("recording", screenRec || cameraRec);
   }
 
   function setRecording(on) {
@@ -322,6 +358,8 @@
     }
     // Lock the device picker buttons while recording.
     for (const dd of deviceDropdowns) dd.btn.disabled = on;
+    // Lock the screen/camera picker too — the video source is fixed at Start.
+    for (const vd of videoDropdowns) vd.btn.disabled = on;
     // Lock the ephemeral toggle while recording (mode is fixed at Start).
     for (const btn of [el.cEphemeral, el.xEphemeral]) if (btn) btn.disabled = on;
   }
@@ -371,6 +409,8 @@
       if (d.btn) d.btn.hidden = active;
     }
     if (active) closeAllPops();
+    // Re-render the video popover so its "không quay khi Listening" hint reflects mode.
+    fillVideoDropdowns();
     // Save (persist-to-disk) is meaningless in ephemeral mode; refresh result panels.
     updateResultSaveButtons();
   }
@@ -540,6 +580,213 @@
       input_device: resolveDeviceId(state.inputSel, d.inputs),
       output_device: resolveDeviceId(state.outputSel, d.outputs),
     };
+  }
+
+  /* ============================ VIDEO (SCREEN / CAMERA) ============================ */
+  // The screen/camera icon button opens ONE popover (.video-pop) with two groups —
+  // Màn hình (Tắt / Toàn màn hình / each display / each window / Chọn vùng…) and
+  // Camera (Tắt / each camera). Compact + expanded share ONE selection via
+  // state.videoSel. A green .on-dot proves a source is chosen; the icon dims when
+  // both are "Tắt". Mirrors the audio-device dropdown (registerDeviceDropdown).
+  const videoDropdowns = [];  // { btn, pop, dot }
+
+  async function loadVideoDevices() {
+    try {
+      state.videoDevices = await api("/api/video-devices");
+    } catch (_) {
+      state.videoDevices = { cameras: [], displays: [], windows: [], ffmpeg_available: false };
+    }
+    fillVideoDropdowns();
+  }
+
+  function setScreenSel(sel) {
+    state.videoSel.screen = sel;
+    fillVideoDropdowns();          // re-render both toolbars; keep popover open
+  }
+  function setCameraSel(sel) {
+    state.videoSel.camera = sel;
+    fillVideoDropdowns();
+  }
+
+  // "Chọn vùng…": prefer the pywebview native picker; when unhosted, the REST
+  // endpoint 501s and we tell the user to run inside the app.
+  async function pickRegion() {
+    closeAllPops();
+    let rect = null;
+    try {
+      const pw = window.pywebview;
+      if (pw && pw.api && typeof pw.api.pick_region === "function") {
+        rect = await pw.api.pick_region();
+      } else {
+        try {
+          rect = await api("/api/region/pick", { method: "POST" });
+        } catch (_e) {
+          notice("Chọn vùng cần chạy trong app.", "warn");
+          return;
+        }
+      }
+    } catch (e) {
+      notice("Không chọn được vùng: " + (e.message || e), "warn");
+      return;
+    }
+    if (rect && rect.w && rect.h) {
+      setScreenSel({ mode: "region", region: { x: rect.x, y: rect.y, w: rect.w, h: rect.h } });
+    }
+    // rect === null means the user cancelled — leave the selection unchanged.
+  }
+
+  function regionLabel(scr) {
+    if (scr && scr.mode === "region" && scr.region) {
+      const r = scr.region;
+      return `Vùng ${r.w}×${r.h} @ (${r.x},${r.y})`;
+    }
+    return "Chọn vùng…";
+  }
+
+  function mkVideoGroupLabel(text) {
+    const l = document.createElement("div");
+    l.className = "video-group-label";
+    l.textContent = text;
+    return l;
+  }
+
+  function mkVideoOpt(label, selected, onClick) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "video-opt" + (selected ? " selected" : "");
+    const check = document.createElement("span");
+    check.className = "device-check";
+    check.appendChild(mkCheckIcon());
+    const name = document.createElement("span");
+    name.className = "device-name";
+    name.textContent = label;
+    row.append(check, name);
+    row.addEventListener("click", onClick);
+    return row;
+  }
+
+  function fillVideoPop(vd) {
+    const pop = vd.pop;
+    pop.textContent = "";
+    const d = state.videoDevices || { cameras: [], displays: [], windows: [], ffmpeg_available: true };
+
+    // Interplay hints at the top of the popover.
+    if (isEphemeralActive()) {
+      const hint = document.createElement("div");
+      hint.className = "video-hint warn";
+      hint.textContent = "Không quay khi Listening (không lưu).";
+      pop.appendChild(hint);
+    } else if (d.ffmpeg_available === false) {
+      const hint = document.createElement("div");
+      hint.className = "video-hint warn";
+      hint.textContent = "Cần ffmpeg để quay video.";
+      pop.appendChild(hint);
+    }
+
+    // --- Màn hình group ---
+    pop.appendChild(mkVideoGroupLabel("Màn hình"));
+    const scr = state.videoSel.screen;
+    pop.appendChild(mkVideoOpt("Tắt", !scr, () => setScreenSel(null)));
+    pop.appendChild(mkVideoOpt("Toàn màn hình", !!scr && scr.mode === "full", () => setScreenSel({ mode: "full" })));
+    (d.displays || []).forEach((disp, i) => {
+      const dims = disp.w && disp.h ? ` ${disp.w}×${disp.h}` : "";
+      const selected = !!scr && scr.mode === "display" && String(scr.display_id) === String(disp.id);
+      pop.appendChild(mkVideoOpt(`Màn ${i + 1}${dims}`, selected, () => setScreenSel({ mode: "display", display_id: disp.id })));
+    });
+    (d.windows || []).forEach((w) => {
+      const selected = !!scr && scr.mode === "window" && String(scr.window_hwnd) === String(w.id);
+      pop.appendChild(mkVideoOpt(`Cửa sổ: ${w.name || w.id}`, selected, () => setScreenSel({ mode: "window", window_hwnd: w.id })));
+    });
+    pop.appendChild(mkVideoOpt(regionLabel(scr), !!scr && scr.mode === "region", () => pickRegion()));
+
+    const sep = document.createElement("div");
+    sep.className = "video-sep";
+    pop.appendChild(sep);
+
+    // --- Camera group ---
+    pop.appendChild(mkVideoGroupLabel("Camera"));
+    const cam = state.videoSel.camera;
+    pop.appendChild(mkVideoOpt("Tắt", !cam, () => setCameraSel(null)));
+    (d.cameras || []).forEach((c) => {
+      const selected = !!cam && String(cam.device) === String(c.id);
+      pop.appendChild(mkVideoOpt(c.name || String(c.id), selected, () => setCameraSel({ device: c.id })));
+    });
+  }
+
+  // Human-readable summary for the button tooltip.
+  function screenSelLabel(scr) {
+    if (!scr) return "Tắt";
+    if (scr.mode === "full") return "Toàn màn hình";
+    if (scr.mode === "region") return regionLabel(scr);
+    const d = state.videoDevices || {};
+    if (scr.mode === "display") {
+      const list = d.displays || [];
+      const i = list.findIndex((x) => String(x.id) === String(scr.display_id));
+      const disp = i >= 0 ? list[i] : null;
+      const dims = disp && disp.w && disp.h ? ` ${disp.w}×${disp.h}` : "";
+      return `Màn ${i >= 0 ? i + 1 : "?"}${dims}`;
+    }
+    if (scr.mode === "window") {
+      const w = (d.windows || []).find((x) => String(x.id) === String(scr.window_hwnd));
+      return "Cửa sổ: " + (w ? (w.name || w.id) : scr.window_hwnd);
+    }
+    return "Tắt";
+  }
+  function cameraSelLabel(cam) {
+    if (!cam) return "Tắt";
+    const c = ((state.videoDevices || {}).cameras || []).find((x) => String(x.id) === String(cam.device));
+    return c ? (c.name || String(c.id)) : String(cam.device);
+  }
+
+  function updateVideoButtons() {
+    const on = !!(state.videoSel.screen || state.videoSel.camera);
+    const title = `Màn hình: ${screenSelLabel(state.videoSel.screen)} · Camera: ${cameraSelLabel(state.videoSel.camera)}`;
+    for (const vd of videoDropdowns) {
+      if (vd.dot) vd.dot.hidden = !on;
+      vd.btn.classList.toggle("source-off", !on);
+      vd.btn.title = title;
+    }
+  }
+
+  function fillVideoDropdowns() {
+    for (const vd of videoDropdowns) fillVideoPop(vd);
+    updateVideoButtons();
+    for (const vd of videoDropdowns) if (!vd.pop.hidden) clampPopover(vd.pop);
+  }
+
+  function registerVideoDropdown(btnId) {
+    const btn = $(btnId);
+    if (!btn) return;
+    const wrap = btn.parentNode;  // .video-dd (relative)
+    const pop = document.createElement("div");
+    pop.className = "video-pop";
+    pop.hidden = true;
+    wrap.appendChild(pop);
+    const vd = { btn, pop, dot: btn.querySelector(".on-dot") };
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = pop.hidden;
+      closeAllPops();
+      if (willOpen) {
+        fillVideoPop(vd);           // render from cache immediately
+        pop.hidden = false;
+        btn.setAttribute("aria-expanded", "true");
+        clampPopover(pop);
+        loadVideoDevices();         // then refresh from the backend
+      }
+    });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    videoDropdowns.push(vd);
+  }
+  registerVideoDropdown("c-screen");
+  registerVideoDropdown("x-screen");
+
+  // The start body's video block: {screen, camera} or null when both are off.
+  function videoRequest() {
+    const screen = state.videoSel.screen || null;
+    const camera = state.videoSel.camera || null;
+    if (!screen && !camera) return null;
+    return { screen, camera };
   }
 
   function updateTranslateButtons() {
@@ -733,6 +980,10 @@
     for (const d of copyDropdowns) {
       d.pop.hidden = true;
       d.btn.setAttribute("aria-expanded", "false");
+    }
+    for (const vd of videoDropdowns) {
+      vd.pop.hidden = true;
+      vd.btn.setAttribute("aria-expanded", "false");
     }
   }
 
@@ -1137,16 +1388,24 @@
         state.openedSessionId = null;
         clearTranscript();
         const ephemeral = !!state.ephemeral;
+        const video = videoRequest();
         const r = await api("/api/capture/start", {
           method: "POST",
-          body: { title, input_device: req.input_device, output_device: req.output_device, ephemeral },
+          body: { title, input_device: req.input_device, output_device: req.output_device, ephemeral, video },
         });
         state.sessionId = r && r.session_id;
         setRecording(true);
         updateEphemeralUi();
-        renderStatus({ recording: true, ephemeral });
+        renderStatus({ recording: true, ephemeral, video: r && r.video });
         setUiMode("transcript");
         notice(ephemeral ? "Đang ghi (nháp — không lưu)." : "Recording started.", "info");
+        // Surface video outcomes from the start response (never silently drop them).
+        if (r && r.video_skipped === "ephemeral") {
+          notice("Không quay video khi Listening (không lưu).", "warn");
+        }
+        if (r && Array.isArray(r.video_errors) && r.video_errors.length) {
+          notice("Quay video lỗi: " + r.video_errors.join("; ") + ". Vẫn ghi âm và chép lời.", "warn");
+        }
       } catch (e) {
         if (e.status === 403) { openConsent(); notice("Please acknowledge consent before recording.", "warn"); }
         else if (e.status === 422) notice("Chọn ít nhất một nguồn để ghi (micro hoặc loa).", "warn");
@@ -2852,8 +3111,9 @@
       state.settings = {};
     }
 
-    // 1b) Audio input/output devices for the two toolbar pickers.
+    // 1b) Audio input/output + screen/camera devices for the toolbar pickers.
     loadAudioDevices();
+    loadVideoDevices();
 
     // 2) Consent gate.
     if (!state.consentOk) openConsent();
