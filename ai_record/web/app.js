@@ -63,6 +63,7 @@
     camPreview: { stream: null, wantKey: null, hidden: false },
     // Backend STT model warmup: "loading" | "ready" | "error" | null (absent).
     warmupState: null,
+    warmupTimer: null,   // poll /api/capture/status while loading so the chip clears when ready
   };
 
   const MAX_ROWS = 500;      // cap DOM nodes (now: group blocks) for long transcripts
@@ -393,6 +394,18 @@
         w.textContent = "⚠ Lỗi tải model";
         w.title = (status && (status.warmup_error || status.note)) || "Không tải được model nhận dạng giọng nói.";
       }
+    }
+    // When IDLE there are no other status updates, so poll until warmup finishes and the
+    // chip clears the moment the model is ready — otherwise it stays stuck on "loading".
+    if (loading) {
+      if (!state.warmupTimer) {
+        state.warmupTimer = setInterval(() => {
+          api("/api/capture/status").then(renderWarmup).catch(() => {});
+        }, 1500);
+      }
+    } else if (state.warmupTimer) {
+      clearInterval(state.warmupTimer);
+      state.warmupTimer = null;
     }
   }
 
