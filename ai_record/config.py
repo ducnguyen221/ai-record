@@ -369,11 +369,18 @@ class Settings:
     whisper_model: str = ""
     whisper_compute_type: str = ""
     latency_mode: str = "fast"
-    whisper_vad_filter: bool = True
+    # The segmenter already delivers Silero-trimmed speech, so a 2nd (whisper) VAD pass
+    # is redundant and clips utterance edges — leave it OFF by default.
+    whisper_vad_filter: bool = False
     force_language: str | None = None
     no_speech_threshold: float = 0.6
     logprob_drop_threshold: float = -1.0
-    min_rms: float = 0.005
+    # Pre-whisper energy gate: utterances below this RMS are skipped before the model
+    # (saves GPU on non-speech). 0.01 is still well below normal speech level.
+    min_rms: float = 0.01
+    # Idle STT-model unload: after this many minutes with NO recording, the resident
+    # whisper model is released (frees VRAM). The next record lazily re-warms. 0 = never.
+    idle_unload_minutes: int = 10
     hallucination_denylist: list[str] = field(
         default_factory=lambda: [
             "thank you",
@@ -417,7 +424,8 @@ class Settings:
     pyannote_model: str = "pyannote/speaker-diarization-3.1"
 
     # video capture (screen + camera; opt-in per-session via the start body)
-    video_screen_fps: int = 30
+    # Desktop is near-static → 15 fps screen keeps files small; camera stays 30.
+    video_screen_fps: int = 15
     video_camera_fps: int = 30
     video_encoder: str = "auto"        # "auto" | "h264_nvenc" | "libx264"
     video_container: str = "mkv"       # "mkv" | "mp4"
@@ -441,7 +449,9 @@ class Settings:
     ollama_url: str = "http://localhost:11434"
 
     # storage / durability
-    retention_days: int = 0
+    # Prune sessions older than this many days at startup (0 = keep forever). Defaults
+    # to 30 so ``records/`` can't grow unbounded; the prune path runs on launch.
+    retention_days: int = 30
     fsync_interval_ms: int = 1000
 
     # output artefacts (transcript.md is ALWAYS written; these are opt-in extras)
@@ -486,6 +496,11 @@ class Settings:
             raise ValueError("retention_days must be >= 0")
         if self.max_speakers < 1:
             raise ValueError("max_speakers must be >= 1")
+        # Video fps must be sane: 0 → ``ffmpeg -framerate 0`` (opaque failure); cap at 120.
+        for _fps_key in ("video_screen_fps", "video_camera_fps"):
+            _fps = getattr(self, _fps_key)
+            if not (0 < _fps <= 120):
+                raise ValueError(f"{_fps_key} must be > 0 and <= 120")
         # output_formats: keep only valid items (dedupe, preserve order), always "md".
         cleaned: list[str] = []
         for f in self.output_formats or []:

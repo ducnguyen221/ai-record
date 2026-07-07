@@ -394,7 +394,8 @@ def test_config_defaults():
     s = Settings()
     assert s.video_encoder == "auto"
     assert s.video_container == "mkv"
-    assert s.video_screen_fps == 30
+    # Screen defaults to 15 fps (near-static desktop → smaller files); camera stays 30.
+    assert s.video_screen_fps == 15
     assert s.video_camera_fps == 30
     assert s.video_capture_cursor is True
     assert s.camera_device == ""
@@ -408,6 +409,17 @@ def test_config_rejects_bad_video_encoder():
 def test_config_rejects_bad_video_container():
     with pytest.raises(ValueError):
         Settings(video_container="avi")
+
+
+def test_config_rejects_bad_video_fps():
+    # 0 fps → ffmpeg -framerate 0 (opaque failure); >120 is out of range.
+    for bad in (0, -5, 121):
+        with pytest.raises(ValueError):
+            Settings(video_screen_fps=bad)
+        with pytest.raises(ValueError):
+            Settings(video_camera_fps=bad)
+    # A sane low value (item 14 default) is accepted.
+    assert Settings(video_screen_fps=15).video_screen_fps == 15
 
 
 # --------------------------------------------------------------------------- #
@@ -430,3 +442,40 @@ def test_session_meta_video_defaults_empty():
         {"session_id": "20250101-000000-x", "title": "t", "created_at": "2025-01-01T00:00:00+00:00"}
     )
     assert m.video == {}
+
+
+# --------------------------------------------------------------------------- #
+# CRITICAL fix #3: a mid-start failure AFTER capture.start() must stop the live
+# capture (no orphaned WASAPI threads) and clean up the half-built session.
+# --------------------------------------------------------------------------- #
+def test_pipeline_start_failure_stops_capture_no_orphan(client, monkeypatch):
+    from ai_record import capture_helpers
+    from ai_record.server import CaptureError  # noqa: F401 (parity with prod import)
+
+    captured: list = []
+
+    class RecordingCaptureManager(FakeCaptureManager):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            captured.append(self)
+
+    class ExplodingPipeline(FakePipeline):
+        def start(self):
+            raise RuntimeError("pipeline boom")
+
+    monkeypatch.setattr("ai_record.transcriber.Transcriber", FakeTranscriber)
+    monkeypatch.setattr("ai_record.pipeline.Pipeline", ExplodingPipeline)
+    monkeypatch.setattr("ai_record.audio.capture.CaptureManager", RecordingCaptureManager)
+
+    state = client.ai_state
+    with pytest.raises(RuntimeError, match="pipeline boom"):
+        capture_helpers.build_and_start(state, "boom", "meeting", ["you"])
+
+    # The live capture was stopped (no orphaned capture threads left running).
+    assert len(captured) == 1
+    assert captured[0].stopped is True
+    # No half-built state was published, and the session dir was cleaned up.
+    assert state.capture is None
+    assert state.pipeline is None
+    assert state.active_session_id is None
+    assert list(state.store.list_sessions()) == []

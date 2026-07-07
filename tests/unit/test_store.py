@@ -590,3 +590,41 @@ def test_video_mux_failure_keeps_original_video(tmp_path, monkeypatch):
     assert [c for c in calls if "-map" in c]         # a mux was attempted
     assert (d / "screen.mkv").exists()               # original silent video preserved
     assert not (d / "screen.mp4").exists()
+
+
+# CRITICAL fix #2: a failed mux must NOT also delete the merged audio (permanent loss).
+def test_video_mux_failure_retains_audio_even_md_only(tmp_path, monkeypatch):
+    # md-only default (no standalone audio requested) + a saved video → the audio is
+    # produced only for the mux and would normally be deleted afterwards. But if the
+    # mux FAILS, deleting it too = silent video + zero audio anywhere. Keep audio.mp3.
+    store = _store_with(tmp_path, output_formats=["md"], video_mux_audio=True)
+    sid = store.create("muxfail-mdonly").session_id
+    d = store._dir(sid)
+    _wav(d, "audio_you.wav")
+    _wav(d, "audio_them.wav")
+    (d / "screen.mkv").write_bytes(b"fake-mkv-video-bytes")
+    store.set_meta_fields(sid, {"video": {"container": "mkv", "screen": {"mode": "full"}}})
+    calls = _mock_ffmpeg(monkeypatch, mux_returncode=1)  # mux fails
+    store.finalize(sid)
+    assert [c for c in calls if "-map" in c]             # mux was attempted
+    assert (d / "screen.mkv").exists()                   # silent video preserved
+    assert (d / "audio.mp3").exists()                    # AUDIO RETAINED (not lost)
+
+
+def test_video_mux_success_deletes_audio_md_only(tmp_path, monkeypatch):
+    # Counterpart: when the mux SUCCEEDS at the md-only default, the standalone audio
+    # is deleted as before (the video carries the sound). Also verifies the persisted
+    # container meta is updated mkv → mp4 to match disk (MAJOR fix #4).
+    store = _store_with(tmp_path, output_formats=["md"], video_mux_audio=True)
+    sid = store.create("muxok-mdonly").session_id
+    d = store._dir(sid)
+    _wav(d, "audio_you.wav")
+    (d / "screen.mkv").write_bytes(b"fake-mkv-video-bytes")
+    store.set_meta_fields(sid, {"video": {"container": "mkv", "screen": {"mode": "full"}}})
+    _mock_ffmpeg(monkeypatch, mux_returncode=0)          # mux succeeds
+    store.finalize(sid)
+    assert (d / "screen.mp4").exists()
+    assert not (d / "screen.mkv").exists()
+    assert not (d / "audio.mp3").exists()                # deleted as before on success
+    # Persisted meta.video.container now matches the on-disk mp4.
+    assert store.load_session(sid).meta.video.get("container") == "mp4"

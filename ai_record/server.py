@@ -85,6 +85,9 @@ class AppState:
         # thread can't race the main-thread window-close _stop_capture and double-stop
         # (double .stop() / double CloseHandle) the same recorder/pipeline.
         self._capture_lock = threading.Lock()
+        # Serializes construction of the single persistent Transcriber so the startup
+        # warmup thread and a capture-start can't race and build two models (2× VRAM).
+        self._transcriber_lock = threading.Lock()
         self.pipeline = None
         self.capture = None
         # A persistent STT transcriber, built + warmed at startup (background thread)
@@ -115,8 +118,12 @@ class AppState:
         if self.transcriber is None:
             from .transcriber import Transcriber
 
-            preset = resolve_preset(self.settings)
-            self.transcriber = Transcriber(self.settings, preset, on_status=self.submit)
+            # Double-checked under the shared lock so a concurrent build_and_start
+            # can't construct a second Transcriber (SPEC resource: avoid 2× model load).
+            with self._transcriber_lock:
+                if self.transcriber is None:
+                    preset = resolve_preset(self.settings)
+                    self.transcriber = Transcriber(self.settings, preset, on_status=self.submit)
         return self.transcriber
 
     # -- auth ------------------------------------------------------------- #
@@ -345,7 +352,10 @@ def create_app(state: AppState) -> FastAPI:
 
     @app.post("/api/capture/stop", dependencies=dep)
     async def stop() -> dict:
-        sid = _stop_capture(state)
+        # _stop_capture joins capture/pipeline threads and runs finalize ffmpeg
+        # (subprocess.run, timeouts up to 600s). Offload it so the event loop
+        # (WS/transcript/other requests) isn't frozen while capture tears down.
+        sid = await asyncio.to_thread(_stop_capture, state)
         return {"session_id": sid, "finalized": True}
 
     @app.get("/api/capture/status", dependencies=dep)
@@ -360,7 +370,8 @@ def create_app(state: AppState) -> FastAPI:
         window and lets ``__main__`` finalize). In a plain browser there is no window
         to destroy, so we at least stop capture + finalize the active session here.
         """
-        sid = _stop_capture(state)
+        # Offload the blocking teardown (thread joins + finalize ffmpeg) off the loop.
+        sid = await asyncio.to_thread(_stop_capture, state)
         return {"ok": True, "session_id": sid}
 
     @app.post("/api/open-folder", dependencies=dep)
@@ -945,7 +956,35 @@ def _stop_capture_locked(state: AppState) -> str | None:
     state.video = None
     state.active_session_id = None
     state.active_ephemeral = False
+    # Record stop counts as activity — restart the idle-unload clock so the model
+    # isn't unloaded immediately after a session ends.
+    tr = getattr(state, "transcriber", None)
+    if tr is not None:
+        with _suppress():
+            tr.mark_activity()
     return sid
+
+
+def _idle_unload_check(state: AppState, now: float | None = None) -> bool:
+    """Unload the resident STT model if it's been idle (no recording) past the
+    ``idle_unload_minutes`` threshold, freeing VRAM. Never unloads while recording.
+
+    Returns True when it actually unloaded. Safe to call repeatedly from a watchdog.
+    """
+    tr = getattr(state, "transcriber", None)
+    if tr is None or getattr(tr, "_model", None) is None:
+        return False
+    if state.pipeline is not None:  # actively recording → never unload
+        return False
+    minutes = getattr(state.settings, "idle_unload_minutes", 0) or 0
+    if minutes <= 0:
+        return False
+    now = time.monotonic() if now is None else now
+    if now - getattr(tr, "last_activity", now) >= minutes * 60:
+        with _suppress():
+            tr.unload()
+        return True
+    return False
 
 
 def _maybe_autosummary(state: AppState, sid: str) -> None:

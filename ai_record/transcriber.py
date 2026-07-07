@@ -128,6 +128,33 @@ class Transcriber:
         # Warmup readiness for the UI ("Đang tải model…"). One of:
         # "idle" (not started) | "loading" | "ready" | "error". Set by ``warmup()``.
         self.warmup_state = "idle"
+        # Monotonic timestamp of the last STT activity (transcribe / warmup / record
+        # start-stop). The idle-unload watchdog (server) uses it to free VRAM when the
+        # model has been resident but unused for ``idle_unload_minutes`` (SPEC resource).
+        self.last_activity = time.monotonic()
+
+    # ------------------------------------------------------------------ #
+    def mark_activity(self) -> None:
+        """Record that the model was just used / recording started (idle-unload clock)."""
+        self.last_activity = time.monotonic()
+
+    def unload(self) -> None:
+        """Release the resident model and free VRAM (idle-unload). The next
+        ``transcribe()``/``warmup()`` lazily reloads via :meth:`load`.
+
+        faster-whisper's model is a **CTranslate2** object (not torch), so
+        ``torch.cuda.empty_cache()`` alone does NOT free its VRAM — it is released only
+        when the model is destroyed. Drop every reference and force a GC so CTranslate2's
+        destructor runs and hands the device memory back."""
+        import gc
+
+        m = self._model
+        self._model = None
+        del m
+        gc.collect()
+        self._empty_cache()  # torch's own cache too (harmless if torch is unused)
+        self.warmup_state = "idle"
+        log.info("whisper model unloaded (idle); will reload on next use")
 
     # ------------------------------------------------------------------ #
     def current_model(self) -> tuple[str, str]:
@@ -147,6 +174,7 @@ class Transcriber:
         to call on a background daemon thread at startup.
         """
         self.warmup_state = "loading"
+        self.last_activity = time.monotonic()
         try:
             if self._model is None:
                 self.load()  # honours the OOM downgrade chain
@@ -166,10 +194,23 @@ class Transcriber:
             log.warning("whisper warmup failed (first utterance will pay cost): %s", exc)
 
     def _new_model(self, model_name: str, compute_type: str, device: str) -> Any:
-        """Instantiate a faster-whisper model (single seam; monkeypatched in tests)."""
+        """Instantiate a faster-whisper model (single seam; monkeypatched in tests).
+
+        Prefer ``local_files_only=True`` so a launch with the snapshot already cached
+        skips the per-launch huggingface.co revision check (offline, faster, no network
+        flakiness). If the model isn't cached yet, fall back to an online load so it
+        downloads once.
+        """
         from faster_whisper import WhisperModel  # type: ignore
 
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
+        try:
+            return WhisperModel(
+                model_name, device=device, compute_type=compute_type, local_files_only=True
+            )
+        except Exception as exc:
+            # Not cached yet (or old faster-whisper without the kwarg) → online load once.
+            log.info("whisper %s not cached offline (%s); loading online once", model_name, exc)
+            return WhisperModel(model_name, device=device, compute_type=compute_type)
 
     def _ensure_model(self) -> None:
         """Load the current (already-resolved) model if none is live."""
@@ -245,6 +286,7 @@ class Transcriber:
     # ------------------------------------------------------------------ #
     def transcribe(self, utt: Utterance) -> Transcript | None:
         t0 = time.perf_counter()
+        self.last_activity = time.monotonic()
         rms = utterance_rms(utt.pcm)
         if rms < self.settings.min_rms:
             return None
@@ -313,7 +355,9 @@ class Transcriber:
                 language=self.settings.force_language or None,
                 vad_filter=self.settings.whisper_vad_filter,
                 beam_size=self._beam,
-                temperature=[0.0, 0.2, 0.4],
+                # Single-pass greedy temperature: the [0.0,0.2,0.4] fallback re-decodes
+                # noisy audio up to 3× for negligible accuracy gain on a live scribe.
+                temperature=0.0,
                 condition_on_previous_text=False,
             )
             return list(segments), info
@@ -384,6 +428,13 @@ class MockTranscriber:
         self._model = model
         self._compute = compute_type
         self.warmup_state = "ready"  # mock is always "loaded"
+        self.last_activity = time.monotonic()
+
+    def mark_activity(self) -> None:
+        self.last_activity = time.monotonic()
+
+    def unload(self) -> None:  # no-op — mock holds no real VRAM
+        return None
 
     def load(self) -> None:  # no-op
         return None

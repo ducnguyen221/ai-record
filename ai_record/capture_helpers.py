@@ -7,6 +7,7 @@ that feeds the pipeline's ring buffers + crash-safe raw writers, and starts both
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from .config import resolve_preset
@@ -53,11 +54,19 @@ def build_and_start(
     epoch_states = {"you": SourceEpoch(), "them": SourceEpoch()}
 
     # Reuse the persistent transcriber warmed at startup (model already in VRAM) so the
-    # first utterance isn't delayed; fall back to a fresh one if warmup never ran.
-    transcriber = getattr(state, "transcriber", None)
-    if transcriber is None:
-        transcriber = Transcriber(settings, preset, on_status=state.submit)
-        state.transcriber = transcriber
+    # first utterance isn't delayed; build one (under the shared lock) if warmup never
+    # ran. ensure_transcriber double-checks so we never race the warmup thread into
+    # constructing a second model (2× VRAM).
+    if getattr(state, "ensure_transcriber", None) is not None:
+        transcriber = state.ensure_transcriber()
+    else:  # test stubs without the full AppState
+        transcriber = getattr(state, "transcriber", None)
+        if transcriber is None:
+            transcriber = Transcriber(settings, preset, on_status=state.submit)
+            state.transcriber = transcriber
+    # Record start counts as activity (resets the idle-unload clock).
+    with contextlib.suppress(Exception):
+        transcriber.mark_activity()
 
     # M2/M3 post-processing (lazy, CPU by default per preset; SPEC.md §4.5).
     translator = None
@@ -107,20 +116,36 @@ def build_and_start(
         raise CaptureError("no audio source available (loopback + mic both failed)")
 
     sources = {cs.source: cs.available for cs in up}
-    state.store.set_meta_fields(
-        session.session_id,
-        {
-            "sources": sources,
-            "hardware_preset": preset.name,
-            "whisper_model": preset.whisper_model,
-            "compute_type": preset.whisper_compute_type,
-        },
-    )
-    pipeline.start()
-    state.pipeline = pipeline
-    state.capture = capture
-    state.active_session_id = session.session_id
-    state.active_ephemeral = bool(ephemeral)
+    # Capture threads are now LIVE (writing WAV). If anything below raises before
+    # state.capture/pipeline are published, _stop_capture can't reach them → orphaned
+    # capture threads. Guard the tail: on ANY failure, stop the live capture (and the
+    # pipeline if it started), drop the half-built session, and re-raise.
+    pipeline_started = False
+    try:
+        state.store.set_meta_fields(
+            session.session_id,
+            {
+                "sources": sources,
+                "hardware_preset": preset.name,
+                "whisper_model": preset.whisper_model,
+                "compute_type": preset.whisper_compute_type,
+            },
+        )
+        pipeline.start()
+        pipeline_started = True
+        state.pipeline = pipeline
+        state.capture = capture
+        state.active_session_id = session.session_id
+        state.active_ephemeral = bool(ephemeral)
+    except Exception:
+        with contextlib.suppress(Exception):
+            capture.stop()
+        if pipeline_started:
+            with contextlib.suppress(Exception):
+                pipeline.stop()
+        with contextlib.suppress(Exception):
+            state.store.delete_session(session.session_id)
+        raise
 
     # -- video capture (opt-in, best-effort) -------------------------------- #
     # Started ONLY after audio is up and ONLY when not ephemeral. A video-start

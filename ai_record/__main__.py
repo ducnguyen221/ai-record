@@ -17,7 +17,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from .config import Secrets, Settings, resolve_sessions_root, localappdata_dir
-from .server import AppState, create_app, _stop_capture
+from .server import AppState, create_app, _idle_unload_check, _stop_capture
 from .store import SessionStore
 
 log = logging.getLogger("ai_record")
@@ -178,6 +178,21 @@ def main() -> None:
             log.debug("stt warmup thread failed", exc_info=True)
 
     threading.Thread(target=_warmup_worker, name="stt-warmup", daemon=True).start()
+
+    # Idle-unload watchdog: periodically release the resident STT model after
+    # ``idle_unload_minutes`` of NOT recording, freeing ~VRAM at idle. The next
+    # record lazily re-warms (the UI shows the "Đang tải model" chip). Daemon +
+    # fully guarded; never unloads mid-recording (see server._idle_unload_check).
+    def _idle_watchdog() -> None:
+        while True:
+            time.sleep(30.0)
+            try:
+                _idle_unload_check(state)
+            except Exception:  # pragma: no cover - defensive; check is already guarded
+                log.debug("idle-unload watchdog check failed", exc_info=True)
+
+    if getattr(settings, "idle_unload_minutes", 0) > 0:
+        threading.Thread(target=_idle_watchdog, name="stt-idle-unload", daemon=True).start()
 
     try:
         try:

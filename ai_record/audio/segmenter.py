@@ -241,7 +241,7 @@ class Segmenter:
         out_queue: "queue.Queue",
         stop_event: threading.Event,
         eof_event: threading.Event | None = None,
-        poll_interval: float = 0.02,
+        poll_interval: float = 0.05,
     ) -> None:
         """Threaded live path: pull frames from ``ring`` and push utterances.
 

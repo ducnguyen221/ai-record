@@ -971,9 +971,14 @@ class SessionStore:
         #    (toggle: ``video_mux_audio``). Guarded so a mux failure never loses the
         #    recording. If the standalone audio file wasn't wanted, remove it afterwards.
         if merged_audio is not None and mux_video:
+            muxed_ok = False
             with contextlib.suppress(Exception):
-                self._mux_audio_into_videos(d, meta, merged_audio)
-            if not want_audio_file:
+                muxed_ok = self._mux_audio_into_videos(d, meta, merged_audio)
+            # Only drop the standalone audio when muxing actually SUCCEEDED for the
+            # target(s) and the user didn't ask to keep a file. If muxing FAILED (or
+            # produced no output), KEEP audio.mp3/wav on disk regardless of
+            # want_audio_file — a stray audio file beats losing the recording entirely.
+            if muxed_ok and not want_audio_file:
                 with contextlib.suppress(OSError):
                     merged_audio.unlink()
                 with contextlib.suppress(OSError):
@@ -1042,11 +1047,15 @@ class SessionStore:
                 out.unlink()
         return None
 
-    def _mux_audio_into_videos(self, d: Path, meta: "SessionMeta", audio_path: Path) -> None:
+    def _mux_audio_into_videos(self, d: Path, meta: "SessionMeta", audio_path: Path) -> bool:
         """Mux ``audio_path`` into each saved video (``screen.*`` / ``camera.*``),
         producing an mp4 WITH sound and removing the silent source. ``-c:v copy`` keeps
         the video stream untouched (no re-encode); audio is encoded to aac; ``-shortest``
         trims to the shorter stream. A/V start offset is approximate (v1).
+
+        Returns True iff at least one target video was successfully muxed. The caller
+        uses this to decide whether the standalone merged-audio file may be deleted —
+        a failed mux must NOT also lose the audio.
 
         Guarded: missing ffmpeg / missing source / mux failure → keep the original
         silent video and warn; the recording is never lost.
@@ -1059,7 +1068,8 @@ class SessionStore:
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             log.warning("ffmpeg not on PATH; keeping silent video (audio mux skipped)")
-            return
+            return False
+        muxed_any = False
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         for name in ("screen", "camera"):
             src = d / f"{name}.{container}"
@@ -1095,11 +1105,18 @@ class SessionStore:
                     # Source was a different container (e.g. .mkv) → drop the silent one.
                     with contextlib.suppress(OSError):
                         src.unlink()
+                muxed_any = True
             else:
                 log.warning("ffmpeg mux exited %s for %s; keeping silent video", proc.returncode, name)
                 with contextlib.suppress(OSError):
                     if target != out and target.exists():
                         target.unlink()
+
+        # The on-disk container is now mp4 for every muxed video → keep persisted meta
+        # in sync (finalize writes meta after this returns). Item: stale container meta.
+        if muxed_any and isinstance(getattr(meta, "video", None), dict):
+            meta.video["container"] = "mp4"
+        return muxed_any
 
     def detect_incomplete(self) -> list[SessionMeta]:
         return [m for m in self.list_sessions() if m.ended_at is None]

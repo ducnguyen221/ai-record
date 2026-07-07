@@ -77,6 +77,10 @@ def pick_region() -> dict | None:
             log.warning("region picker timed out after %.0fs; cancelling", _PICK_TIMEOUT_S)
             try:
                 proc.kill()
+                # Wait for the child to actually die before the finally-block unlinks
+                # the temp file: on Windows a file still held open by the (not-yet-reaped)
+                # child cannot be deleted, leaking it.
+                proc.wait(timeout=2)
             except Exception:
                 pass
             return None

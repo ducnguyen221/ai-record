@@ -330,3 +330,128 @@ def test_stop_capture_no_summary_when_not_selected(client, monkeypatch):
     assert out == sid
     assert sid not in state._summary_threads
     assert not (state.store._dir(sid) / "summary.md").exists()
+
+
+# --------------------------------------------------------------------------- #
+# CRITICAL fix #1: Stop/quit must NOT run the blocking _stop_capture on the loop
+# --------------------------------------------------------------------------- #
+def _records_off_loop(monkeypatch, seen):
+    """Patch server._stop_capture to record whether it ran on the event loop."""
+    import asyncio
+    import threading
+
+    def fake_stop(state):
+        try:
+            asyncio.get_running_loop()
+            seen["on_loop"] = True
+        except RuntimeError:
+            # No running loop here → we're on a worker thread (offloaded). Good.
+            seen["on_loop"] = False
+        seen["thread"] = threading.current_thread().name
+        return "sess-offloaded"
+
+    monkeypatch.setattr("ai_record.server._stop_capture", fake_stop)
+
+
+def test_stop_offloads_stop_capture_off_event_loop(client, monkeypatch):
+    seen: dict = {}
+    _records_off_loop(monkeypatch, seen)
+    r = client.post("/api/capture/stop", headers=H)
+    assert r.status_code == 200
+    assert r.json()["session_id"] == "sess-offloaded"
+    # The blocking teardown ran in a worker thread, never the event loop thread.
+    assert seen["on_loop"] is False
+
+
+def test_quit_offloads_stop_capture_off_event_loop(client, monkeypatch):
+    seen: dict = {}
+    _records_off_loop(monkeypatch, seen)
+    r = client.post("/api/quit", headers=H)
+    assert r.status_code == 200
+    assert r.json()["session_id"] == "sess-offloaded"
+    assert seen["on_loop"] is False
+
+
+# --------------------------------------------------------------------------- #
+# RESOURCE fix #8: idle-unload the STT model (frees VRAM), reload on next use
+# --------------------------------------------------------------------------- #
+class _IdleInfo:
+    language = "en"
+    language_probability = 0.98
+
+
+class _IdleSeg:
+    text = "hi"
+    avg_logprob = -0.3
+    no_speech_prob = 0.02
+
+
+class _IdleFakeModel:
+    def transcribe(self, pcm, **kw):
+        return iter([_IdleSeg()]), _IdleInfo()
+
+
+def _idle_utt():
+    import numpy as np
+    from ai_record.audio.segmenter import Utterance
+
+    return Utterance(
+        source="them",
+        pcm=(0.3 * np.sin(np.linspace(0, 20, 16000))).astype(np.float32),
+        start=0.0,
+        end=1.0,
+        audio_start_sample=0,
+        audio_end_sample=16000,
+        source_epoch_id=0,
+        source_offset_sec=0.0,
+        forced_cut=False,
+    )
+
+
+def test_idle_unload_after_threshold_and_reload(client):
+    import time as _t
+
+    from ai_record.server import _idle_unload_check
+
+    state = client.ai_state
+    state.settings = state.settings.update({"idle_unload_minutes": 10})
+    tr = state.ensure_transcriber()
+    tr._new_model = lambda *a, **k: _IdleFakeModel()
+    tr._model = _IdleFakeModel()  # pretend a model is resident
+    tr.warmup_state = "ready"
+
+    # Recently active → NOT unloaded.
+    tr.last_activity = _t.monotonic()
+    assert _idle_unload_check(state) is False
+    assert tr._model is not None
+
+    # Past the threshold, not recording → unloaded + VRAM freed.
+    tr.last_activity = _t.monotonic() - 11 * 60
+    assert _idle_unload_check(state) is True
+    assert tr._model is None
+    assert tr.warmup_state == "idle"
+
+    # Next transcribe lazily reloads the model (load() via _new_model).
+    result = tr.transcribe(_idle_utt())
+    assert result is not None
+    assert tr._model is not None
+
+
+def test_idle_unload_never_unloads_mid_recording(client):
+    import time as _t
+
+    from ai_record.server import _idle_unload_check
+
+    state = client.ai_state
+    state.settings = state.settings.update({"idle_unload_minutes": 10})
+    tr = state.ensure_transcriber()
+    tr._model = _IdleFakeModel()
+    tr.warmup_state = "ready"
+    tr.last_activity = _t.monotonic() - 60 * 60  # long idle
+
+    state.pipeline = object()  # actively recording
+    try:
+        assert _idle_unload_check(state) is False
+        assert tr._model is not None  # never unloaded while recording
+    finally:
+        state.pipeline = None

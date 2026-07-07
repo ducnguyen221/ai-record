@@ -90,15 +90,20 @@ def _wants_nvenc_fallback(settings, override: str | None) -> bool:
 
 def _encoder_flags(encoder: str) -> list[str]:
     if encoder in ("h264_nvenc", "hevc_nvenc"):
-        # Conservative NVENC: constant-ish quality VBR, no lookahead / no spatial AQ
-        # (those inflate VRAM + latency and are unnecessary for a screen recording).
+        # Conservative NVENC: quality-targeted VBR (constant quality, bitrate floats)
+        # so a near-static desktop encodes far smaller than a fixed 8 Mbit/s stream,
+        # while -maxrate/-bufsize cap the worst case on busy scenes. No lookahead / no
+        # spatial AQ (those inflate VRAM + latency, needless for a screen recording).
         # hevc_nvenc is the wide-desktop path: h264_nvenc caps at 4096px width, HEVC
         # NVENC goes to 8192, so ultrawide/multi-monitor captures still encode on GPU.
         return [
             "-c:v", encoder,
             "-preset", "p4",
             "-rc", "vbr",
-            "-b:v", "8M",
+            "-cq", "28",
+            "-b:v", "0",
+            "-maxrate", "12M",
+            "-bufsize", "24M",
             "-pix_fmt", "yuv420p",
         ]
     # libx264 (also the nvenc → software fallback).
@@ -465,7 +470,7 @@ class VideoRecorder:
         spawn=subprocess.Popen,
         encoder_fallback_argv=None,
         encoder_fallback_argvs=None,
-        startup_grace_s: float = 1.5,
+        startup_grace_s: float = 0.6,
     ) -> None:
         self.argv = list(argv)
         self.out_path = str(out_path)
