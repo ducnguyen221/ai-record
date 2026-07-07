@@ -841,6 +841,13 @@ button, input, select { font-family: inherit; font-size: inherit; color: inherit
 
 .utt .body { min-width: 0; }
 .utt .text { color: var(--text); word-wrap: break-word; }
+
+/* Grouped block: consecutive same-speaker utterances flow as one paragraph that
+   wraps to fill the body column. A touch more line-height + vertical breathing
+   room so a long joined block reads as prose, not a wall of run-on text. */
+.utt-group { padding-top: 9px; padding-bottom: 9px; }
+.utt-group .text { line-height: 1.6; }
+.utt-group .tr { line-height: 1.55; }
 .utt .tr {
   color: var(--text-muted);
   font-size: 13px;

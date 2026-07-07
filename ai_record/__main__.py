@@ -250,9 +250,9 @@ def main() -> None:
                 "AI Record",
                 url,
                 js_api=_api,
-                width=700,
+                width=820,
                 height=250,          # compact size; tall enough that the Translate popover fits w/o scroll (matches app.js)
-                min_size=(660, 120),  # never so narrow that toolbar icons (through the ✕) get clipped
+                min_size=(740, 120),  # wide enough that the "Đang tải model…" chip never clips the toolbar buttons
                 frameless=True,
                 on_top=True,
                 resizable=True,

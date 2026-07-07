@@ -24,7 +24,12 @@
     ephemeral: false,        // "Không lưu" mode: nothing is written to disk
     sessionId: null,
     lastSeq: 0,              // highest durable seq seen (for WS catch-up)
-    utterances: new Map(),   // seq -> {record, el}
+    utterances: new Map(),   // seq -> {record}  (per-utterance data store)
+    // Grouped transcript: consecutive same-speaker utterances (gap < SPEAKER_GAP_MS)
+    // render as ONE flowing block. groups = ordered list of blocks; seqGroup maps each
+    // utterance seq back to its group so patches/renames/search still resolve in place.
+    groups: [],              // [{speaker,startTs,lastEnd,seqs:[],el,tsEl,spkEl,textEl,trEl}]
+    seqGroup: new Map(),     // seq -> group object
     autoScroll: true,
     searchTerm: "",
     ws: null,
@@ -60,7 +65,10 @@
     warmupState: null,
   };
 
-  const MAX_ROWS = 500;      // cap DOM nodes for very long transcripts
+  const MAX_ROWS = 500;      // cap DOM nodes (now: group blocks) for long transcripts
+  // Start a NEW block when the speaker changes OR the pause since the previous
+  // utterance's end is at least this long. Record start/end are seconds (see fmtTs).
+  const SPEAKER_GAP_MS = 30000;
   const UNKNOWN_SPEAKER = "Speaker ?";
   // The Summary/Analyze tabs each map to a fixed summarize scenario; provider comes
   // from settings. reformat = verbatim grouping, analyze = general analysis + critique.
@@ -212,7 +220,7 @@
       const hasTranscript = state.recording || state.openedSessionId || state.utterances.size > 0;
       setUiMode(hasTranscript ? "transcript" : "browser");
     } else {
-      requestResize(700, 250);
+      requestResize(820, 250);
     }
   }
 
@@ -1013,10 +1021,7 @@
   }
 
   function refreshTranslationRows() {
-    for (const { record, el: row } of state.utterances.values()) {
-      const tr = row.querySelector(".tr");
-      if (tr) applyTranslation(tr, record);
-    }
+    for (const g of state.groups) renderGroup(g);
     renderRecent();
   }
 
@@ -1323,56 +1328,162 @@
     return { text: UNKNOWN_SPEAKER, cls: "pending unknown" };
   }
 
-  function buildRow(rec) {
+  // Record time fields are seconds (see fmtTs). Tolerate a missing end.
+  function recStart(rec) { const v = Number(rec.start); return isNaN(v) ? 0 : v; }
+  function recEnd(rec) { const v = Number(rec.end); return isNaN(v) ? recStart(rec) : v; }
+
+  /* ---- Group model --------------------------------------------------------
+   * A group is ONE .utt/.utt-group block: a single speaker label + the block's
+   * START timestamp shown once, and a .text that is the space-joined original
+   * text of every utterance in the group. Consecutive utterances append to the
+   * current group; a new block starts only when the speaker changes OR the pause
+   * since the previous utterance's end is >= SPEAKER_GAP_MS.
+   *
+   * Speaker patches: we DO NOT split/re-flow a group when a later diarization
+   * patch changes one utterance's speaker — the block keeps its identity. The
+   * displayed label follows the group's FIRST utterance, so a "Speaker ?" block
+   * that later resolves to a real name updates cleanly without fragmenting.
+   */
+  function groupOrigText(g) {
+    return g.seqs
+      .map((s) => { const e = state.utterances.get(s); return e ? (e.record.text || "").trim() : ""; })
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  // Combined translation for a group: join the per-utterance translations (seq
+  // order), tracking whether any are still pending or errored so we can mirror the
+  // existing pending/"translating…"/error states without losing any translation.
+  function groupTrParts(g) {
+    const pieces = [];
+    let pending = false, error = false;
+    for (const s of g.seqs) {
+      const e = state.utterances.get(s);
+      if (!e) continue;
+      const r = e.record;
+      if (r.translation) pieces.push(String(r.translation).trim());
+      else if (r.translation_error) error = true;
+      else if (r.stale_skipped) { /* intentionally contributes nothing */ }
+      else pending = true;
+    }
+    return { text: pieces.filter(Boolean).join(" "), pending, error };
+  }
+
+  // Single renderer for a group's body: original text + combined translation, both
+  // with search highlight, plus the search show/hide toggle. Speaker is separate.
+  function renderGroup(g) {
+    const term = state.searchTerm;
+    const text = groupOrigText(g);
+    const tr = groupTrParts(g);
+    const enabled = !!(state.settings && state.settings.translate_enabled);
+    const haystack = [text, tr.text, g.speaker].filter(Boolean).join(" ").toLowerCase();
+    const match = !term || haystack.includes(term.toLowerCase());
+    g.el.classList.toggle("hidden", !match);
+
+    if (term && match) highlight(g.textEl, text, term);
+    else g.textEl.textContent = text;
+
+    const trEl = g.trEl;
+    trEl.classList.remove("pending", "error");
+    if (!enabled) {
+      trEl.textContent = "";
+    } else if (tr.text) {
+      if (term && match) highlight(trEl, tr.text, term);
+      else trEl.textContent = tr.text;
+    } else if (tr.pending) {
+      trEl.textContent = "translating…";
+      trEl.classList.add("pending");
+    } else if (tr.error) {
+      trEl.textContent = "Translation failed";
+      trEl.classList.add("error");
+    } else {
+      trEl.textContent = "";
+    }
+  }
+
+  // Speaker label follows the group's first utterance (see grouping note above).
+  function updateGroupSpeaker(g) {
+    const first = state.utterances.get(g.seqs[0]);
+    const sp = first ? speakerText(first.record) : { text: g.speaker, cls: "" };
+    g.speaker = sp.text;
+    const spk = g.spkEl;
+    spk.textContent = sp.text;
+    spk.classList.remove("pending", "unknown");
+    if (sp.cls) spk.classList.add(...sp.cls.split(" "));
+    const conf = first ? first.record.diarization_confidence : null;
+    spk.title = conf != null
+      ? `confidence ${(conf * 100).toFixed(0)}% · click to rename`
+      : "click to rename";
+  }
+
+  // Would `rec` extend group `g`? Same speaker AND a short pause since g.lastEnd.
+  function sameGroup(g, rec) {
+    if (g.speaker !== speakerText(rec).text) return false;
+    return (recStart(rec) - g.lastEnd) * 1000 < SPEAKER_GAP_MS;
+  }
+
+  // Build a fresh group block for `rec` and register it (does NOT insert into DOM).
+  function newGroup(rec) {
     const row = document.createElement("div");
-    row.className = "utt";
-    row.dataset.seq = rec.seq;
+    row.className = "utt utt-group";
+    row.dataset.seq = rec.seq;   // first seq of the block (DOM ordering + trim)
     row.dataset.source = rec.source === "you" ? "you" : "them";
 
     const ts = document.createElement("div");
     ts.className = "ts";
-    ts.textContent = fmtTs(rec.start);
+    ts.textContent = fmtTs(recStart(rec));
 
     const spk = document.createElement("div");
     spk.className = "spk";
-    const sp = speakerText(rec);
-    spk.textContent = sp.text;
-    if (sp.cls) spk.classList.add(...sp.cls.split(" "));
-    if (rec.diarization_confidence != null)
-      spk.title = `confidence ${(rec.diarization_confidence * 100).toFixed(0)}% · click to rename`;
-    else spk.title = "click to rename";
-    spk.addEventListener("click", () => beginRename(spk, rec));
 
     const body = document.createElement("div");
     body.className = "body";
     const text = document.createElement("div");
     text.className = "text";
-    text.textContent = rec.text || "";
     const tr = document.createElement("div");
     tr.className = "tr";
-    applyTranslation(tr, rec);
     body.append(text, tr);
-
     row.append(ts, spk, body);
-    return row;
+
+    const g = {
+      speaker: "", startTs: recStart(rec), lastEnd: recEnd(rec),
+      seqs: [rec.seq], el: row, tsEl: ts, spkEl: spk, textEl: text, trEl: tr,
+    };
+    spk.addEventListener("click", () => beginRename(g));
+    state.groups.push(g);
+    state.seqGroup.set(rec.seq, g);
+    updateGroupSpeaker(g);
+    renderGroup(g);
+    return g;
   }
 
-  function applyTranslation(trEl, rec) {
-    trEl.classList.remove("pending", "error");
-    if (rec.translation) {
-      trEl.textContent = rec.translation;
-    } else if (rec.translation_error) {
-      // Generic message (the flag is a bool) and NOT a stuck "translating…" state.
-      trEl.textContent = "Translation failed";
-      trEl.classList.add("error");
-    } else if (rec.stale_skipped) {
-      trEl.textContent = "";
-    } else if (state.settings && state.settings.translate_enabled) {
-      // Translation is expected but hasn't arrived yet.
-      trEl.textContent = "translating…";
-      trEl.classList.add("pending");
-    } else {
-      trEl.textContent = "";
+  // Append `rec` to an existing group (tail append; seqs stay ascending).
+  function appendToGroup(g, rec) {
+    g.seqs.push(rec.seq);
+    g.lastEnd = recEnd(rec);
+    state.seqGroup.set(rec.seq, g);
+    renderGroup(g);
+  }
+
+  // Place the newest utterance: extend the last block or start a new one.
+  function placeTail(rec) {
+    const g = state.groups[state.groups.length - 1];
+    if (g && sameGroup(g, rec)) appendToGroup(g, rec);
+    else el.xTranscript.appendChild(newGroup(rec).el);
+  }
+
+  // Rebuild every group + the DOM from state.utterances (seq order). Used only on
+  // the rare out-of-order / gap-filling path, so text is never duplicated.
+  function regroupAll() {
+    el.xTranscript.textContent = "";
+    state.groups = [];
+    state.seqGroup.clear();
+    const seqs = [...state.utterances.keys()].sort((a, b) => a - b);
+    for (const s of seqs) {
+      const rec = state.utterances.get(s).record;
+      const g = state.groups[state.groups.length - 1];
+      if (g && sameGroup(g, rec)) appendToGroup(g, rec);
+      else el.xTranscript.appendChild(newGroup(rec).el);
     }
   }
 
@@ -1381,25 +1492,17 @@
     if (rec.session_id && !state.sessionId) state.sessionId = rec.session_id;
     if (state.utterances.has(rec.seq)) { patchUtterance(rec.seq, rec); return; }
     if (rec.seq > state.lastSeq) state.lastSeq = rec.seq;
+    state.utterances.set(rec.seq, { record: rec });
 
-    const row = buildRow(rec);
-    state.utterances.set(rec.seq, { record: rec, el: row });
+    // Fast path: a pure tail append (newest seq) extends the last block. Anything
+    // landing before the current tail (out-of-order replay / gap fill) triggers a
+    // full regroup so it lands in the correct block without duplicating text.
+    const last = state.groups[state.groups.length - 1];
+    const lastSeq = last ? last.seqs[last.seqs.length - 1] : -Infinity;
+    if (rec.seq > lastSeq) placeTail(rec);
+    else regroupAll();
 
-    // Insert in seq order (usually just append; handle out-of-order catch-up).
-    const cont = el.xTranscript;
-    const lastChild = cont.lastElementChild;
-    if (!lastChild || Number(lastChild.dataset.seq) < rec.seq) {
-      cont.appendChild(row);
-    } else {
-      let ref = null;
-      for (const child of cont.children) {
-        if (Number(child.dataset.seq) > rec.seq) { ref = child; break; }
-      }
-      cont.insertBefore(row, ref);
-    }
-
-    trimDom();
-    applySearchToRow(row);
+    trimGroups();
     renderRecent();
     refreshPlainIfActive();
     if (state.autoScroll) scrollToLatest();
@@ -1409,40 +1512,31 @@
     const entry = state.utterances.get(seq);
     if (!entry) return;
     Object.assign(entry.record, fields);
-    const rec = entry.record;
-    const row = entry.el;
-    // Translation line (in place, no reflow of siblings).
-    const tr = row.querySelector(".tr");
-    if (tr) applyTranslation(tr, rec);
-    // Speaker label.
-    if ("speaker" in fields || "diarization_confidence" in fields) {
-      const spk = row.querySelector(".spk");
-      const sp = speakerText(rec);
-      spk.textContent = sp.text;
-      spk.classList.remove("pending", "unknown");
-      if (sp.cls) spk.classList.add(...sp.cls.split(" "));
-      if (rec.diarization_confidence != null)
-        spk.title = `confidence ${(rec.diarization_confidence * 100).toFixed(0)}% · click to rename`;
-    }
-    applySearchToRow(row);
+    const g = state.seqGroup.get(seq);
+    if (!g) return;
+    // Re-render the group's combined translation + text in place (no sibling reflow).
+    if ("speaker" in fields || "diarization_confidence" in fields) updateGroupSpeaker(g);
+    renderGroup(g);
     if (isRecentSeq(seq)) renderRecent();
     refreshPlainIfActive();
   }
 
-  function trimDom() {
-    const cont = el.xTranscript;
-    while (cont.children.length > MAX_ROWS) {
-      const first = cont.firstElementChild;
-      const seq = Number(first.dataset.seq);
-      state.utterances.delete(seq);
-      first.remove();
+  // Keep the DOM bounded by trimming the OLDEST groups (and dropping their seqs
+  // from state), so grouping never blows past the cap.
+  function trimGroups() {
+    while (state.groups.length > MAX_ROWS) {
+      const g = state.groups.shift();
+      for (const s of g.seqs) { state.utterances.delete(s); state.seqGroup.delete(s); }
+      if (g.el && g.el.parentNode) g.el.remove();
     }
   }
 
-  /* Rename speaker inline; broadcasts nothing itself — server may echo a rename. */
-  function beginRename(spkEl, rec) {
+  /* Rename a group's speaker inline; broadcasts nothing itself — the server may
+   * echo a rename that applySpeakerRename then applies to every matching block. */
+  function beginRename(g) {
+    const spkEl = g.spkEl;
     if (spkEl.querySelector("input")) return;
-    const current = speakerText(rec).text;
+    const current = g.speaker;
     const input = document.createElement("input");
     input.className = "spk-edit";
     input.value = current === UNKNOWN_SPEAKER ? "" : current;
@@ -1457,17 +1551,8 @@
       if (finished) return;
       finished = true;
       const val = input.value.trim();
-      spkEl.textContent = "";
-      if (commit && val && val !== current) {
-        const sp = speakerText(rec);
-        spkEl.textContent = sp.text;
-        spkEl.className = "spk" + (sp.cls ? " " + sp.cls : "");
-        renameSpeaker(current, val);
-      } else {
-        const sp = speakerText(rec);
-        spkEl.textContent = sp.text;
-        spkEl.className = "spk" + (sp.cls ? " " + sp.cls : "");
-      }
+      if (commit && val && val !== current) renameSpeaker(current, val);
+      updateGroupSpeaker(g);   // restore the label (rename echoes back on success)
     };
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); finish(true); }
@@ -1476,15 +1561,16 @@
     input.addEventListener("blur", () => finish(true));
   }
 
-  // Relabel all rows whose displayed speaker matches `oldName` -> `newName`.
+  // Relabel every group whose displayed speaker matches `oldName` -> `newName`.
   function applySpeakerRename(oldName, newName) {
     if (!newName) return;
-    for (const { record, el: row } of state.utterances.values()) {
-      if (speakerText(record).text === (oldName || "")) {
-        record.speaker = newName;
-        const spk = row.querySelector(".spk");
-        spk.textContent = newName;
-        spk.classList.remove("pending", "unknown");
+    for (const g of state.groups) {
+      if (g.speaker === (oldName || "")) {
+        for (const s of g.seqs) {
+          const e = state.utterances.get(s);
+          if (e) e.record.speaker = newName;
+        }
+        updateGroupSpeaker(g);
       }
     }
     renderRecent();
@@ -1578,29 +1664,10 @@
     if (i < plain.length) node.appendChild(document.createTextNode(plain.slice(i)));
   }
 
-  function applySearchToRow(row) {
-    const term = state.searchTerm;
-    const entry = state.utterances.get(Number(row.dataset.seq));
-    if (!entry) return;
-    const rec = entry.record;
-    const haystack = [rec.text, rec.translation, rec.speaker].filter(Boolean).join(" ").toLowerCase();
-    const match = !term || haystack.includes(term.toLowerCase());
-    row.classList.toggle("hidden", !match);
-    if (match && term) {
-      highlight(row.querySelector(".text"), rec.text || "", term);
-      const tr = row.querySelector(".tr");
-      if (rec.translation) highlight(tr, rec.translation, term);
-    } else {
-      // Reset highlight when no term.
-      const text = row.querySelector(".text");
-      if (text.querySelector("mark")) text.textContent = rec.text || "";
-      const tr = row.querySelector(".tr");
-      if (tr.querySelector("mark") && rec.translation) tr.textContent = rec.translation;
-    }
-  }
-
+  // Search now works per GROUP: renderGroup re-derives the joined text + combined
+  // translation, applies the highlight, and toggles the block's visibility.
   function applySearchAll() {
-    for (const { el: row } of state.utterances.values()) applySearchToRow(row);
+    for (const g of state.groups) renderGroup(g);
   }
 
   el.xSearch.addEventListener("input", () => {
@@ -1718,23 +1785,24 @@
   // Build the full transcript as plain text, matching the .txt export shape:
   //   [hh:mm:ss] Speaker: text
   //       translation
+  // One line/paragraph per GROUP, consistent with the grouped dialogue view:
+  //   [hh:mm:ss] Speaker: <joined text>
+  //       <joined translation>   (only if any translation is present)
   function buildTranscriptText() {
-    const seqs = [...state.utterances.keys()].sort((a, b) => a - b);
     const lines = [];
-    for (const s of seqs) {
-      const rec = state.utterances.get(s).record;
-      const spk = speakerText(rec).text;
-      lines.push(`[${fmtTs(rec.start)}] ${spk}: ${rec.text || ""}`);
-      if (rec.translation) lines.push(`    ${rec.translation}`);
+    for (const g of state.groups) {
+      const text = groupOrigText(g);
+      lines.push(`[${fmtTs(g.startTs)}] ${g.speaker}: ${text}`);
+      const tr = groupTrParts(g).text;
+      if (tr) lines.push(`    ${tr}`);
     }
     return lines.join("\n");
   }
 
-  // "Text only" variant: just the concatenated spoken text, no speaker/timestamp.
+  // "Text only" variant: just the concatenated spoken text, one paragraph per group.
   function buildTranscriptPlainText() {
-    const seqs = [...state.utterances.keys()].sort((a, b) => a - b);
-    return seqs
-      .map((s) => (state.utterances.get(s).record.text || "").trim())
+    return state.groups
+      .map((g) => groupOrigText(g).trim())
       .filter(Boolean)
       .join("\n");
   }
@@ -3125,6 +3193,8 @@
   function clearTranscript() {
     el.xTranscript.textContent = "";
     state.utterances.clear();
+    state.groups = [];
+    state.seqGroup.clear();
     state.lastSeq = 0;
     // Reset the two result tabs + return to the live transcript view.
     state.summaryResult = null;
