@@ -167,6 +167,18 @@ def main() -> None:
     url = f"http://127.0.0.1:{port}?token={token}"
     log.info("ai-record ready at %s", url)
 
+    # Warm up the STT model in the background so it's resident in VRAM before the first
+    # recording — the UI stays responsive and the first utterance isn't delayed by a
+    # cold model load. Daemon thread; fully guarded (a warmup failure just means the
+    # first real utterance pays the cost as before). Never blocks startup.
+    def _warmup_worker() -> None:
+        try:
+            state.ensure_transcriber().warmup()
+        except Exception:  # pragma: no cover - defensive; warmup() is already guarded
+            log.debug("stt warmup thread failed", exc_info=True)
+
+    threading.Thread(target=_warmup_worker, name="stt-warmup", daemon=True).start()
+
     try:
         try:
             import webview  # type: ignore

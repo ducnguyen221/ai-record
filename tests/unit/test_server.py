@@ -23,6 +23,28 @@ def client(tmp_path):
         yield c
 
 
+def test_status_includes_warmup_state(client):
+    from ai_record.server import _status
+
+    state = client.ai_state
+    # No transcriber yet → idle / not ready.
+    st = _status(state)
+    assert st["warmup_state"] == "idle"
+    assert st["model_ready"] is False
+
+    # Once the persistent transcriber is warmed, status reflects it.
+    tr = state.ensure_transcriber()
+    tr.warmup_state = "ready"
+    st = _status(state)
+    assert st["warmup_state"] == "ready"
+    assert st["model_ready"] is True
+
+    # And the REST status endpoint carries the same fields.
+    body = client.get("/api/capture/status", headers=H).json()
+    assert body["warmup_state"] == "ready"
+    assert body["model_ready"] is True
+
+
 def test_open_folder_root(client, monkeypatch):
     calls = []
     monkeypatch.setattr("ai_record.server._reveal", lambda p: calls.append(str(p)))

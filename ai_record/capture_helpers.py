@@ -52,7 +52,12 @@ def build_and_start(
 
     epoch_states = {"you": SourceEpoch(), "them": SourceEpoch()}
 
-    transcriber = Transcriber(settings, preset, on_status=state.submit)
+    # Reuse the persistent transcriber warmed at startup (model already in VRAM) so the
+    # first utterance isn't delayed; fall back to a fresh one if warmup never ran.
+    transcriber = getattr(state, "transcriber", None)
+    if transcriber is None:
+        transcriber = Transcriber(settings, preset, on_status=state.submit)
+        state.transcriber = transcriber
 
     # M2/M3 post-processing (lazy, CPU by default per preset; SPEC.md §4.5).
     translator = None

@@ -125,10 +125,45 @@ class Transcriber:
         self.on_status = on_status
         self.on_recover = on_recover
         self.pending_recovery: list[Utterance] = []
+        # Warmup readiness for the UI ("Đang tải model…"). One of:
+        # "idle" (not started) | "loading" | "ready" | "error". Set by ``warmup()``.
+        self.warmup_state = "idle"
 
     # ------------------------------------------------------------------ #
     def current_model(self) -> tuple[str, str]:
         return self._model_name, self._compute_type
+
+    def is_ready(self) -> bool:
+        """True once ``warmup()`` has fully initialized the model (VRAM + kernels)."""
+        return self.warmup_state == "ready"
+
+    def warmup(self) -> None:
+        """Eagerly build the model and run a tiny silent dummy transcription so the
+        first real utterance doesn't pay the cold-start (model load + CUDA/kernel
+        init) cost mid-recording.
+
+        Fully guarded: any failure leaves ``warmup_state == "error"`` and NEVER
+        propagates — the first real utterance simply pays the cost as before. Safe
+        to call on a background daemon thread at startup.
+        """
+        self.warmup_state = "loading"
+        try:
+            if self._model is None:
+                self.load()  # honours the OOM downgrade chain
+            # A short silent buffer forces CUDA context + kernel compilation now.
+            n = max(1, int(self.settings.target_sample_rate * 0.5))
+            dummy = np.zeros(n, dtype=np.float32)
+            segments, _info = self._model.transcribe(
+                dummy,
+                language=self.settings.force_language or None,
+                beam_size=1,
+            )
+            list(segments)  # drain the generator so the work actually runs
+            self.warmup_state = "ready"
+            log.info("whisper warmup complete (%s/%s)", self._model_name, self._compute_type)
+        except Exception as exc:  # never raise — first utterance pays the cost instead
+            self.warmup_state = "error"
+            log.warning("whisper warmup failed (first utterance will pay cost): %s", exc)
 
     def _new_model(self, model_name: str, compute_type: str, device: str) -> Any:
         """Instantiate a faster-whisper model (single seam; monkeypatched in tests)."""
@@ -348,9 +383,16 @@ class MockTranscriber:
         self._drop = drop_predicate
         self._model = model
         self._compute = compute_type
+        self.warmup_state = "ready"  # mock is always "loaded"
 
     def load(self) -> None:  # no-op
         return None
+
+    def warmup(self) -> None:  # no-op — mock is always ready
+        self.warmup_state = "ready"
+
+    def is_ready(self) -> bool:
+        return self.warmup_state == "ready"
 
     def current_model(self) -> tuple[str, str]:
         return self._model, self._compute

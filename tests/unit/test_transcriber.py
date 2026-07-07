@@ -95,6 +95,46 @@ def test_persistent_oom_queues_for_recovery_not_dropped():
     assert any("recover_queued" in s.get("note", "") for s in statuses)
 
 
+def test_warmup_builds_model_once_and_sets_ready():
+    settings = Settings(hardware_preset="cpu", min_rms=0.0)
+    t = Transcriber(settings, resolve_preset(settings))
+    assert t.warmup_state == "idle"
+    assert t.is_ready() is False
+
+    built = _FakeModel(fail_times=0)
+    calls = {"new": 0}
+
+    def _new(*a, **k):
+        calls["new"] += 1
+        return built
+
+    t._new_model = _new
+    t.warmup()
+    assert t.warmup_state == "ready"
+    assert t.is_ready() is True
+    assert calls["new"] == 1          # model built exactly once
+    assert built.calls == 1           # dummy silent transcription actually ran
+
+    # A second warmup does not rebuild (model already live) but re-runs the dummy.
+    t.warmup()
+    assert calls["new"] == 1
+    assert t.is_ready() is True
+
+
+def test_warmup_error_is_swallowed_and_state_error():
+    settings = Settings(hardware_preset="cpu", min_rms=0.0)
+    t = Transcriber(settings, resolve_preset(settings))
+
+    def _boom(*a, **k):
+        raise RuntimeError("model load exploded")
+
+    t._new_model = _boom
+    # Must NOT propagate — the first real utterance pays the cost instead.
+    t.warmup()
+    assert t.warmup_state == "error"
+    assert t.is_ready() is False
+
+
 def test_ladder_downgrades_compute_before_model_size():
     settings = Settings(hardware_preset="cpu")
     t = Transcriber(settings, resolve_preset(settings))

@@ -87,6 +87,12 @@ class AppState:
         self._capture_lock = threading.Lock()
         self.pipeline = None
         self.capture = None
+        # A persistent STT transcriber, built + warmed at startup (background thread)
+        # so the model is already resident in VRAM before the first recording and the
+        # first utterance isn't delayed by a cold model load. Reused by the capture
+        # pipeline (see capture_helpers.build_and_start). ``_status`` reads its
+        # ``warmup_state`` so the UI can show "Đang tải model…".
+        self.transcriber = None
         # Video-capture manager for the active session (None when no video is recording).
         self.video = None
         self.video_errors: list[str] = []
@@ -100,6 +106,18 @@ class AppState:
         self._rediarize_threads: dict[str, Any] = {}
         # Auto AI-summary worker threads, keyed by session id (joinable in tests).
         self._summary_threads: dict[str, Any] = {}
+
+    # -- transcriber (warmup) --------------------------------------------- #
+    def ensure_transcriber(self):
+        """Lazily build the persistent transcriber (single instance reused across the
+        app run). Safe to call from any thread; construction is cheap (the heavy model
+        load happens in :meth:`Transcriber.warmup`/first transcribe)."""
+        if self.transcriber is None:
+            from .transcriber import Transcriber
+
+            preset = resolve_preset(self.settings)
+            self.transcriber = Transcriber(self.settings, preset, on_status=self.submit)
+        return self.transcriber
 
     # -- auth ------------------------------------------------------------- #
     def allowed_origins(self) -> set[str]:
@@ -799,7 +817,19 @@ def _status(state: AppState) -> dict:
         "ws_drops": state.ws_drops,
         "sources": {},
         "video": None,
+        # STT model warmup for the UI ("Đang tải model…" until ready). Read from the
+        # pipeline's transcriber while recording, else the persistent warmup one.
+        "warmup_state": "idle",
+        "model_ready": False,
     }
+    tr = None
+    if state.pipeline is not None:
+        tr = getattr(state.pipeline, "transcriber", None)
+    if tr is None:
+        tr = getattr(state, "transcriber", None)
+    if tr is not None:
+        base["warmup_state"] = getattr(tr, "warmup_state", "idle")
+        base["model_ready"] = base["warmup_state"] == "ready"
     if state.video is not None:
         with _suppress():
             base["video"] = state.video.status()

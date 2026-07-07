@@ -53,6 +53,11 @@
     videoSel: { screen: null, camera: null },
     sessionsCache: [],       // last /api/sessions payload (for client-side filtering)
     browserSearch: "",
+    // Cosmetic webcam preview (getUserMedia). Released whenever ffmpeg needs the
+    // camera; wantKey tracks the device we intend to show so re-syncs are idempotent.
+    camPreview: { stream: null, wantKey: null, hidden: false },
+    // Backend STT model warmup: "loading" | "ready" | "error" | null (absent).
+    warmupState: null,
   };
 
   const MAX_ROWS = 500;      // cap DOM nodes for very long transcripts
@@ -144,6 +149,11 @@
     confirmOk: $("confirm-ok"), confirmCancel: $("confirm-cancel"),
     noToken: $("no-token"),
     notices: $("notices"),
+    // model warmup + camera preview (PiP)
+    cWarmup: $("c-warmup"), xWarmup: $("x-warmup"),
+    camPip: $("cam-pip"), camPipHead: $("cam-pip-head"),
+    camPipVideo: $("cam-pip-video"), camPipPh: $("cam-pip-ph"),
+    camPipHide: $("cam-pip-hide"),
   };
 
   /* ============================ REST HELPERS ============================ */
@@ -348,6 +358,34 @@
     }
     // Compact bar has no chip row: tint the screen/camera icon while capturing.
     for (const vd of videoDropdowns) vd.btn.classList.toggle("recording", screenRec || cameraRec);
+    // Model warmup indicator (backend warms the STT model at startup). Read whichever
+    // field the backend sends; tolerate absence.
+    renderWarmup(status);
+  }
+
+  // Show a calm "⏳ Đang tải model…" chip near BOTH status lines while the STT model
+  // loads; clear it when ready; turn red on warmup error. Never disables Record.
+  function renderWarmup(status) {
+    let warm = null;
+    if (status) {
+      if (typeof status.warmup_state === "string") warm = status.warmup_state;
+      else if (typeof status.model_ready === "boolean") warm = status.model_ready ? "ready" : "loading";
+    }
+    state.warmupState = warm;
+    const loading = warm === "loading";
+    const errored = warm === "error";
+    for (const w of [el.cWarmup, el.xWarmup]) {
+      if (!w) continue;
+      w.hidden = !(loading || errored);
+      w.classList.toggle("error", errored);
+      if (loading) {
+        w.textContent = "⏳ Đang tải model…";
+        w.title = "Đang tải model nhận dạng giọng nói. Bạn vẫn ghi được; phần chép lời bắt đầu khi tải xong.";
+      } else if (errored) {
+        w.textContent = "⚠ Lỗi tải model";
+        w.title = (status && (status.warmup_error || status.note)) || "Không tải được model nhận dạng giọng nói.";
+      }
+    }
   }
 
   function setRecording(on) {
@@ -362,6 +400,9 @@
     for (const vd of videoDropdowns) vd.btn.disabled = on;
     // Lock the ephemeral toggle while recording (mode is fixed at Start).
     for (const btn of [el.cEphemeral, el.xEphemeral]) if (btn) btn.disabled = on;
+    // While recording, ffmpeg (dshow) owns the camera → release our preview stream and
+    // show the "đang quay" placeholder; on stop, the preview resumes automatically.
+    syncCamPreview();
   }
 
   function refreshToggleEnabled() {
@@ -605,7 +646,10 @@
   }
   function setCameraSel(sel) {
     state.videoSel.camera = sel;
+    // Picking a camera un-hides a manually-hidden preview so it comes back.
+    if (sel) state.camPreview.hidden = false;
     fillVideoDropdowns();
+    syncCamPreview();              // open / release the live PiP preview
   }
 
   // "Chọn vùng…": prefer the pywebview native picker; when unhosted, the REST
@@ -751,6 +795,9 @@
   function fillVideoDropdowns() {
     for (const vd of videoDropdowns) fillVideoPop(vd);
     updateVideoButtons();
+    // The "Video (mp4)" save indicator is derived from the video selection — keep it
+    // in sync whenever the selection changes (guard: output dropdowns register later).
+    if (outputDropdowns.length) refreshOutputDropdowns();
     for (const vd of videoDropdowns) if (!vd.pop.hidden) clampPopover(vd.pop);
   }
 
@@ -788,6 +835,171 @@
     if (!screen && !camera) return null;
     return { screen, camera };
   }
+
+  /* ============================ CAMERA PREVIEW (PiP) ============================ */
+  // A cosmetic live webcam thumbnail (getUserMedia) shown while a camera is picked, so
+  // the user can frame themselves. It is NEVER on the ffmpeg recording path: ffmpeg
+  // (dshow) holds the camera exclusively while recording, so we RELEASE our stream
+  // before recording starts and show a calm placeholder instead. All failures
+  // (busy / permission / constraints) degrade to a placeholder, never an exception.
+  function camKey(cam) { return cam ? String(cam.device) : null; }
+
+  function stopStreamTracks(stream) {
+    if (!stream) return;
+    for (const t of stream.getTracks()) { try { t.stop(); } catch (_) { /* ignore */ } }
+  }
+
+  // Release our preview stream (frees the camera for ffmpeg / other apps).
+  function stopCamStream() {
+    if (state.camPreview.stream) {
+      stopStreamTracks(state.camPreview.stream);
+      state.camPreview.stream = null;
+    }
+    if (el.camPipVideo) el.camPipVideo.srcObject = null;
+  }
+
+  // Show a placeholder message (or clear it and reveal the <video>).
+  function setPipPlaceholder(msg) {
+    if (el.camPipPh) { el.camPipPh.hidden = !msg; el.camPipPh.textContent = msg || ""; }
+    if (el.camPipVideo) el.camPipVideo.hidden = !!msg;
+  }
+
+  function pipErrorMessage(err) {
+    const name = err && err.name;
+    // Camera busy (ffmpeg or another app holds it) — the most common case here.
+    if (name === "NotReadableError" || name === "TrackStartError" || name === "AbortError") {
+      return "Camera đang quay — không xem trước được";
+    }
+    if (name === "NotAllowedError" || name === "SecurityError") {
+      return "Không mở được camera (thiếu quyền)";
+    }
+    return "Không mở được camera";
+  }
+
+  // Best-effort: map the picked camera (by name) to a getUserMedia deviceId.
+  async function camMatchDeviceId(cam) {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return null;
+      const name = cameraSelLabel(cam);
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const cams = devs.filter((d) => d.kind === "videoinput");
+      const exact = cams.find((d) => d.label && name && d.label === name);
+      if (exact) return exact.deviceId;
+      const fuzzy = cams.find((d) => d.label && name && (d.label.includes(name) || name.includes(d.label)));
+      return fuzzy ? fuzzy.deviceId : null;
+    } catch (_) { return null; }
+  }
+
+  // Open the preview for `cam`. Prefer the matched deviceId; fall back to the default
+  // camera. Any failure paints a placeholder. Guards against a stale open when the
+  // selection changed while awaiting.
+  async function openCamStream(cam) {
+    if (!el.camPipVideo || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setPipPlaceholder("Không mở được camera");
+      return;
+    }
+    stopCamStream();
+    setPipPlaceholder(null);
+    const wantKey = camKey(cam);
+    const deviceId = await camMatchDeviceId(cam);
+    const attempts = [];
+    if (deviceId) attempts.push({ video: { deviceId: { exact: deviceId } }, audio: false });
+    attempts.push({ video: true, audio: false });   // default camera fallback
+    let lastErr = null;
+    for (const constraints of attempts) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        // Selection changed (or we started recording) while awaiting → discard.
+        if (state.camPreview.wantKey !== wantKey || state.recording || state.camPreview.hidden) {
+          stopStreamTracks(stream);
+          return;
+        }
+        state.camPreview.stream = stream;
+        el.camPipVideo.srcObject = stream;
+        setPipPlaceholder(null);
+        try { await el.camPipVideo.play(); } catch (_) { /* autoplay is muted; ok */ }
+        return;
+      } catch (err) {
+        lastErr = err;
+        // A busy device won't succeed on the fallback either — stop retrying.
+        if (err && (err.name === "NotReadableError" || err.name === "NotAllowedError")) break;
+      }
+    }
+    setPipPlaceholder(pipErrorMessage(lastErr));
+  }
+
+  // Single source of truth: reconcile the PiP with the current selection + record state.
+  function syncCamPreview() {
+    const pip = el.camPip;
+    if (!pip) return;
+    const cam = state.videoSel.camera;
+    const want = !!cam && !state.camPreview.hidden;
+    if (!want) {
+      stopCamStream();
+      pip.hidden = true;
+      state.camPreview.wantKey = null;
+      return;
+    }
+    pip.hidden = false;
+    const key = camKey(cam);
+    if (state.recording) {
+      // ffmpeg owns the camera during a recording — never contend for it.
+      stopCamStream();
+      state.camPreview.wantKey = key;
+      setPipPlaceholder("Camera đang quay — không xem trước được");
+      return;
+    }
+    if (state.camPreview.stream && state.camPreview.wantKey === key) return;  // already live
+    state.camPreview.wantKey = key;
+    openCamStream(cam);
+  }
+
+  if (el.camPipHide) {
+    el.camPipHide.addEventListener("click", () => {
+      state.camPreview.hidden = true;   // manual hide: release + hide until re-picked
+      syncCamPreview();
+    });
+  }
+
+  // Release the camera when the app/window is hidden; resume when it returns.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopCamStream();
+    else syncCamPreview();
+  });
+  window.addEventListener("pagehide", stopCamStream);
+
+  // Drag the PiP by its header (pointer events; clamped to the viewport).
+  (function initPipDrag() {
+    const pip = el.camPip, head = el.camPipHead;
+    if (!pip || !head) return;
+    let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+    head.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".cam-pip-btn")) return;   // let the hide button click through
+      const r = pip.getBoundingClientRect();
+      pip.style.left = r.left + "px"; pip.style.top = r.top + "px";
+      pip.style.right = "auto"; pip.style.bottom = "auto";
+      sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+      dragging = true;
+      pip.classList.add("dragging");
+      try { head.setPointerCapture(e.pointerId); } catch (_) { /* ok */ }
+    });
+    head.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const w = pip.offsetWidth, h = pip.offsetHeight;
+      let nx = ox + (e.clientX - sx), ny = oy + (e.clientY - sy);
+      nx = Math.max(6, Math.min(nx, window.innerWidth - w - 6));
+      ny = Math.max(6, Math.min(ny, window.innerHeight - h - 6));
+      pip.style.left = nx + "px"; pip.style.top = ny + "px";
+    });
+    const end = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      pip.classList.remove("dragging");
+      try { head.releasePointerCapture(e.pointerId); } catch (_) { /* ok */ }
+    };
+    head.addEventListener("pointerup", end);
+    head.addEventListener("pointercancel", end);
+  })();
 
   function updateTranslateButtons() {
     const on = !!(state.settings && state.settings.translate_enabled);
@@ -946,6 +1158,14 @@
   const OUTPUT_ORDER = OUTPUT_OPTIONS.map((o) => o.key);
   const outputDropdowns = [];  // { btn, pop, checks: Map<key, input>, badge }
 
+  // "Video (mp4)" is a DERIVED, read-only indicator — never a real output_formats
+  // token (the backend enum has no video entry). It reflects: a screen/camera source
+  // is on AND we're not in ephemeral ("Listening") mode, so the backend will save the
+  // captured video muxed with audio as .mp4.
+  function videoSaveActive() {
+    return !!(state.videoSel.screen || state.videoSel.camera) && !isEphemeralActive();
+  }
+
   // Current formats as a Set: sanitize to known keys and always include "md".
   function currentOutputFormats() {
     const raw = (state.settings && state.settings.output_formats) || ["md"];
@@ -1016,10 +1236,21 @@
   function refreshOutputDropdowns() {
     const set = currentOutputFormats();
     const on = OUTPUT_ORDER.filter((k) => set.has(k));
+    const vsave = videoSaveActive();
+    const hasSource = !!(state.videoSel.screen || state.videoSel.camera);
     for (const d of outputDropdowns) {
       for (const [key, cb] of d.checks) cb.checked = set.has(key);
-      if (d.badge) d.badge.hidden = on.length <= 1;   // dot when >1 format selected
-      d.btn.title = "Định dạng lưu: " + on.join(", ");
+      // Derived, read-only "Video (mp4)" row: ticked only when a source is on + not ephemeral.
+      if (d.videoCheck) d.videoCheck.checked = vsave;
+      if (d.videoNote) {
+        d.videoNote.textContent = vsave
+          ? "sẽ lưu .mp4 kèm âm thanh"
+          : isEphemeralActive() ? "Không quay khi Listening"
+          : hasSource ? "" : "Chọn màn hình hoặc camera để lưu mp4";
+      }
+      // Save-dot lights when >1 text format OR video will be saved.
+      if (d.badge) d.badge.hidden = on.length <= 1 && !vsave;
+      d.btn.title = "Định dạng lưu: " + on.join(", ") + (vsave ? ", Video (mp4)" : "");
     }
   }
 
@@ -1045,6 +1276,25 @@
       checks.set(opt.key, cb);
       pop.appendChild(row);
     }
+    // Derived, read-only "Video (mp4)" row (see videoSaveActive): informs that video
+    // will be saved when a source is on + not ephemeral. Disabled — it is a mirror of
+    // the video-source selection, not a togglable format the backend accepts.
+    const vsep = document.createElement("div");
+    vsep.className = "output-sep";
+    const vrow = document.createElement("label");
+    vrow.className = "output-opt readonly";
+    const vcb = document.createElement("input");
+    vcb.type = "checkbox";
+    vcb.disabled = true;
+    const vlabel = document.createElement("span");
+    vlabel.className = "output-vlabel";
+    const vmain = document.createElement("span");
+    vmain.textContent = "Video (mp4)";
+    const vnote = document.createElement("small");
+    vnote.className = "output-vnote";
+    vlabel.append(vmain, vnote);
+    vrow.append(vcb, vlabel);
+    pop.append(vsep, vrow);
     wrap.appendChild(pop);
     const badge = btn.querySelector(".fmt-badge");
     btn.addEventListener("click", (e) => {
@@ -1054,7 +1304,7 @@
       if (willOpen) { refreshOutputDropdowns(); pop.hidden = false; btn.setAttribute("aria-expanded", "true"); clampPopover(pop); }
     });
     pop.addEventListener("click", (e) => e.stopPropagation());
-    outputDropdowns.push({ btn, pop, checks, badge });
+    outputDropdowns.push({ btn, pop, checks, badge, videoCheck: vcb, videoNote: vnote });
   }
   registerOutputDropdown("c-output");
   registerOutputDropdown("x-output");
@@ -1389,6 +1639,8 @@
         clearTranscript();
         const ephemeral = !!state.ephemeral;
         const video = videoRequest();
+        // Release our cosmetic preview so ffmpeg (dshow) can claim the camera exclusively.
+        if (video && video.camera) stopCamStream();
         const r = await api("/api/capture/start", {
           method: "POST",
           body: { title, input_device: req.input_device, output_device: req.output_device, ephemeral, video },
@@ -1399,6 +1651,10 @@
         renderStatus({ recording: true, ephemeral, video: r && r.video });
         setUiMode("transcript");
         notice(ephemeral ? "Đang ghi (nháp — không lưu)." : "Recording started.", "info");
+        // Model still warming up: recording is fine, but transcription lags until ready.
+        if (state.warmupState === "loading") {
+          notice("Model đang tải — phần chép lời sẽ bắt đầu khi tải xong.", "info");
+        }
         // Surface video outcomes from the start response (never silently drop them).
         if (r && r.video_skipped === "ephemeral") {
           notice("Không quay video khi Listening (không lưu).", "warn");

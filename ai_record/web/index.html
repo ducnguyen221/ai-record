@@ -114,6 +114,7 @@
         <span class="dot" id="c-dot" data-state="idle"></span>
         <span class="status-text" id="c-status-text">Idle</span>
       </div>
+      <span class="warmup-chip" id="c-warmup" hidden>⏳ Đang tải model…</span>
       <div class="spacer pywebview-drag-region"></div>
       <button id="c-settings" class="icon-btn" type="button" title="Settings" aria-label="Settings">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
@@ -231,6 +232,7 @@
         <span class="dot" id="x-dot" data-state="idle"></span>
         <span class="status-text" id="x-status-text">Idle</span>
       </div>
+      <span class="warmup-chip" id="x-warmup" hidden>⏳ Đang tải model…</span>
 
       <div class="spacer pywebview-drag-region"></div>
 
@@ -332,6 +334,21 @@
     </section>
   </section>
 
+</div>
+
+<!-- ============================ CAMERA PREVIEW (PiP) ============================ -->
+<!-- Cosmetic live-webcam thumbnail via getUserMedia. Draggable, closable. NEVER on the
+     ffmpeg recording path: released while ffmpeg records (camera busy) → placeholder. -->
+<div id="cam-pip" class="cam-pip" hidden aria-label="Xem trước camera">
+  <div id="cam-pip-head" class="cam-pip-head">
+    <span class="cam-pip-title">Camera</span>
+    <button id="cam-pip-hide" class="cam-pip-btn" type="button"
+            title="Ẩn xem trước" aria-label="Ẩn xem trước camera">✕</button>
+  </div>
+  <div class="cam-pip-body">
+    <video id="cam-pip-video" class="cam-pip-video" autoplay muted playsinline></video>
+    <div id="cam-pip-ph" class="cam-pip-ph" hidden></div>
+  </div>
 </div>
 
 <!-- ============================ NOTICES ============================ -->

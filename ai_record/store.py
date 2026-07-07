@@ -939,15 +939,26 @@ class SessionStore:
             with contextlib.suppress(Exception):
                 _atomic_write(d / "transcript.txt", transcript_txt(meta, records))
 
-        # 2) Audio: transcode to mp3 / keep as wav / delete.
-        if want_mp3:
-            self._transcode_audio_to_mp3(d)
-        elif want_wav:
-            pass  # leave the canonical wavs (and segments) in place.
-        else:
-            # Default: md-only. Drop every wav (canonical + per-minute segments) + idx.
-            # NOTE: this targets ONLY ``*.wav`` + ``samples.idx`` — it never touches the
-            # video artefacts (``screen.*`` / ``camera.*``), which are retained always.
+        # 2) Audio: MERGE the per-source WAVs (you + them) into ONE combined file
+        #    (all speech mixed together, no per-speaker split) — mp3 or wav — or, when
+        #    no audio output is wanted, delete every wav + idx (default md-only).
+        # A saved video must ALWAYS carry the recorded sound, so if this session recorded
+        # any video we produce the merged audio track even when the user didn't ask to
+        # KEEP a standalone audio file — then (if unwanted) delete it after muxing.
+        has_video = any(
+            not p.name.endswith(".log")
+            for p in (list(d.glob("screen.*")) + list(d.glob("camera.*")))
+        )
+        mux_video = has_video and bool(getattr(s, "video_mux_audio", True))
+        want_audio_file = want_mp3 or want_wav
+
+        merged_audio: Path | None = None
+        if want_audio_file or mux_video:
+            merged_audio = self._merge_audio_sources(d, "wav" if (want_wav and not want_mp3) else "mp3")
+        if not want_audio_file and not mux_video:
+            # Default md-only, no video: drop every wav (canonical + per-minute segments)
+            # + idx. This targets ONLY ``*.wav`` + ``samples.idx`` — never the video
+            # artefacts (``screen.*`` / ``camera.*``), which are retained always.
             for wav in list(d.glob("*.wav")):
                 with contextlib.suppress(OSError):
                     wav.unlink()
@@ -956,45 +967,139 @@ class SessionStore:
                 with contextlib.suppress(OSError):
                     idx.unlink()
 
-    def _transcode_audio_to_mp3(self, d: Path) -> None:
-        """Transcode each canonical ``audio_<src>.wav`` to mp3 via ffmpeg, then drop the
-        wav(s) + per-minute segments on success. Missing ffmpeg → keep wav + warn."""
+        # 3) Video: mux the merged audio into each saved video so a kept video has sound
+        #    (toggle: ``video_mux_audio``). Guarded so a mux failure never loses the
+        #    recording. If the standalone audio file wasn't wanted, remove it afterwards.
+        if merged_audio is not None and mux_video:
+            with contextlib.suppress(Exception):
+                self._mux_audio_into_videos(d, meta, merged_audio)
+            if not want_audio_file:
+                with contextlib.suppress(OSError):
+                    merged_audio.unlink()
+                with contextlib.suppress(OSError):
+                    (d / "samples.idx").unlink()
+
+    def _merge_audio_sources(self, d: Path, out_fmt: str) -> Path | None:
+        """Mix the available per-source canonical WAVs (``audio_you.wav`` +
+        ``audio_them.wav``) into ONE combined ``audio.<out_fmt>`` (all speech together,
+        no per-source split) via a single ffmpeg ``amix`` command; drop the per-source
+        wavs + per-minute segments on success. Returns the merged file's path, or None.
+
+        Guarded (SPEC.md §5.7 output artefacts): missing ffmpeg → keep the per-source
+        WAV(s), warn, and return None; a single source → straight transcode (no amix);
+        no sources → nothing to do.
+        """
         import shutil
         import subprocess
 
+        present = [
+            d / f"audio_{src}.wav"
+            for src in ("you", "them")
+            if (d / f"audio_{src}.wav").exists() and (d / f"audio_{src}.wav").stat().st_size > 0
+        ]
+        if not present:
+            return None
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
-            log.warning("ffmpeg not on PATH; keeping WAV audio (mp3 export skipped)")
-            return
+            log.warning("ffmpeg not on PATH; keeping per-source WAV (merged audio skipped)")
+            return None
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        for source in ("you", "them"):
-            wav = d / f"audio_{source}.wav"
-            if not wav.exists():
-                continue
-            mp3 = d / f"audio_{source}.mp3"
-            try:
-                proc = subprocess.run(
-                    [ffmpeg, "-y", "-i", str(wav), "-codec:a", "libmp3lame",
-                     "-qscale:a", "2", str(mp3)],
-                    capture_output=True,
-                    creationflags=creationflags,
-                    timeout=300,
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                log.warning("ffmpeg transcode failed for %s: %s; keeping WAV", source, exc)
-                continue
-            if proc.returncode == 0 and mp3.exists() and mp3.stat().st_size > 0:
-                # Success: drop the canonical wav + per-minute segment wavs for this source.
+        out = d / f"audio.{out_fmt}"
+        argv = [ffmpeg, "-y"]
+        for wav in present:
+            argv += ["-i", str(wav)]
+        if len(present) >= 2:
+            # Mix ALL sources into one track (normalize=0 keeps original levels/no ducking).
+            argv += ["-filter_complex", f"amix=inputs={len(present)}:normalize=0", "-ac", "2"]
+        else:
+            argv += ["-ac", "2"]  # single source → straight (no amix)
+        if out_fmt == "mp3":
+            argv += ["-codec:a", "libmp3lame", "-qscale:a", "2"]
+        else:
+            argv += ["-c:a", "pcm_s16le"]
+        argv += [str(out)]
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, creationflags=creationflags, timeout=300
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("ffmpeg audio merge failed: %s; keeping per-source WAV", exc)
+            return None
+        if proc.returncode == 0 and out.exists() and out.stat().st_size > 0:
+            # Success: drop every per-source canonical wav + per-minute segment wav.
+            for src in ("you", "them"):
+                wav = d / f"audio_{src}.wav"
                 with contextlib.suppress(OSError):
-                    wav.unlink()
-                for seg in d.glob(f"audio_{source}.[0-9][0-9][0-9].wav"):
+                    if wav.exists():
+                        wav.unlink()
+                for seg in d.glob(f"audio_{src}.[0-9][0-9][0-9].wav"):
                     with contextlib.suppress(OSError):
                         seg.unlink()
-            else:
-                log.warning("ffmpeg exited %s for %s; keeping WAV", proc.returncode, source)
+            return out
+        log.warning("ffmpeg merge exited %s; keeping per-source WAV", proc.returncode)
+        with contextlib.suppress(OSError):
+            if out.exists():
+                out.unlink()
+        return None
+
+    def _mux_audio_into_videos(self, d: Path, meta: "SessionMeta", audio_path: Path) -> None:
+        """Mux ``audio_path`` into each saved video (``screen.*`` / ``camera.*``),
+        producing an mp4 WITH sound and removing the silent source. ``-c:v copy`` keeps
+        the video stream untouched (no re-encode); audio is encoded to aac; ``-shortest``
+        trims to the shorter stream. A/V start offset is approximate (v1).
+
+        Guarded: missing ffmpeg / missing source / mux failure → keep the original
+        silent video and warn; the recording is never lost.
+        """
+        import shutil
+        import subprocess
+
+        video_meta = getattr(meta, "video", None) or {}
+        container = video_meta.get("container") or "mkv"
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            log.warning("ffmpeg not on PATH; keeping silent video (audio mux skipped)")
+            return
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        for name in ("screen", "camera"):
+            src = d / f"{name}.{container}"
+            if not src.exists() or src.stat().st_size == 0:
+                continue
+            out = d / f"{name}.mp4"
+            # When the source is already .mp4, write to a temp then replace in place.
+            target = out if src != out else (d / f"{name}.muxed.mp4")
+            argv = [
+                ffmpeg, "-y",
+                "-i", str(src),
+                "-i", str(audio_path),
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "copy", "-c:a", "aac", "-shortest",
+                str(target),
+            ]
+            try:
+                proc = subprocess.run(
+                    argv, capture_output=True, creationflags=creationflags, timeout=600
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                log.warning("ffmpeg mux failed for %s: %s; keeping silent video", name, exc)
                 with contextlib.suppress(OSError):
-                    if mp3.exists():
-                        mp3.unlink()
+                    if target != out and target.exists():
+                        target.unlink()
+                continue
+            if proc.returncode == 0 and target.exists() and target.stat().st_size > 0:
+                if target != out:
+                    # Source was already .mp4 → replace it with the muxed version.
+                    with contextlib.suppress(OSError):
+                        os.replace(target, out)
+                elif src != out:
+                    # Source was a different container (e.g. .mkv) → drop the silent one.
+                    with contextlib.suppress(OSError):
+                        src.unlink()
+            else:
+                log.warning("ffmpeg mux exited %s for %s; keeping silent video", proc.returncode, name)
+                with contextlib.suppress(OSError):
+                    if target != out and target.exists():
+                        target.unlink()
 
     def detect_incomplete(self) -> list[SessionMeta]:
         return [m for m in self.list_sessions() if m.ended_at is None]

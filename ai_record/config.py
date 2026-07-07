@@ -423,6 +423,10 @@ class Settings:
     video_container: str = "mkv"       # "mkv" | "mp4"
     video_capture_cursor: bool = True
     camera_device: str = ""            # default camera device name (empty = none)
+    # Mux the recorded (merged) audio track into the saved video at finalize, so a
+    # kept video has sound. When False the video is left silent. A/V start offset is
+    # approximate (audio starts slightly before video) — acceptable for v1.
+    video_mux_audio: bool = True
 
     # summarization (M4)
     summarizer_provider: str = "ollama"   # local Qwen (qwen2.5:7b) by default — private, offline
